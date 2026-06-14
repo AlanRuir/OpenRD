@@ -69,11 +69,12 @@ MVP 成功标准：
 
 ### 视频链路
 
-- 当前默认：单路前摄 `/dev/openrd-cam-front`，也就是当前板端 `/dev/video22` / `rkisp0-vir0`，GStreamer 直接以 RTSP publisher 推送到本机 MediaMTX 的 `live` 路径；
+- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegdec`/`videoconvert` 转为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTSP publisher 推送到本机 MediaMTX 的 `live` 路径；
 - 局域网 RTSP 调试地址：`rtsp://192.168.100.108:8554/live`；
 - 浏览器 WebRTC 播放地址：`http://192.168.100.108:8889/live/`；
-- `openrd-video-native.service`、`mediamtx.service`、`rkaiq_3A.service` 均启用 systemd 开机自启动；
-- 视频 watchdog 使用真实 RTSP 读帧健康检查；默认只做有限自恢复，仍失败时进入 `faulted` 并停止 systemd 自动重启，避免持续反复拉起不稳定的 camera/ISP 链路；
+- `openrd-video-native.service` 与 `mediamtx.service` 均启用 systemd 开机自启动；
+- CSI/IMX415 链路保留为可选调试路径，不再作为默认视频输入；
+- 视频 watchdog 使用真实 RTSP 读帧健康检查；当前 UVC 调试阶段默认关闭自动健康重启，避免排查时反复拉起视频链路；
 - 公网阶段：WebRTC + TURN/中继。
 
 ### 摄像头 V4L2 诊断

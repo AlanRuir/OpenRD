@@ -25,6 +25,7 @@ shift || true
 
 MODE=fakesink
 DEVICE=auto
+INPUT_FORMAT=${OPENRD_VIDEO_INPUT_FORMAT:-mjpg}
 WIDTH=1280
 HEIGHT=720
 FPS=30
@@ -71,7 +72,7 @@ OpenRD Native Video Runtime v0.1
 选项:
   --mode fakesink|file|mpegts|rtp|rtsp
                            输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX。
-  --device PATH|auto       V4L2 设备；`auto` 会自动选择可用的 `rkisp_mainpath` 节点。
+  --device PATH|auto       V4L2 设备；`auto` 会优先选择 UVC 摄像头，仍保留 CSI 节点作为可选回退。
   --width N                宽度，默认 1280。
   --height N               高度，默认 720。
   --fps N                  帧率，默认 30。
@@ -108,6 +109,8 @@ parse_args() {
         MODE=${2:?missing value for --mode}; shift 2 ;;
       --device)
         DEVICE=${2:?missing value for --device}; shift 2 ;;
+      --input-format)
+        INPUT_FORMAT=${2:?missing value for --input-format}; shift 2 ;;
       --width)
         WIDTH=${2:?missing value for --width}; shift 2 ;;
       --height)
@@ -241,6 +244,13 @@ validate_args() {
       echo "unsupported H264 header mode: $H264_HEADER_MODE" >&2
       exit 2 ;;
   esac
+
+  case "$INPUT_FORMAT" in
+    nv12|mjpg) ;;
+    *)
+      echo "unsupported input format: $INPUT_FORMAT" >&2
+      exit 2 ;;
+  esac
 }
 
 check_dependencies() {
@@ -268,6 +278,18 @@ check_dependencies() {
     echo "mpph264enc not found; Rockchip MPP GStreamer plugin is unavailable" >&2
     exit 1
   }
+
+  if [[ "$INPUT_FORMAT" == "mjpg" ]]; then
+    gst-inspect-1.0 jpegdec >/dev/null 2>&1 || {
+      echo "jpegdec not found; install GStreamer JPEG decoder plugin for MJPG input" >&2
+      exit 1
+    }
+
+    gst-inspect-1.0 videoconvert >/dev/null 2>&1 || {
+      echo "videoconvert not found; install GStreamer video conversion plugin for MJPG input" >&2
+      exit 1
+    }
+  fi
 
   if [[ "$MODE" == "rtsp" ]]; then
     gst-inspect-1.0 rtspclientsink >/dev/null 2>&1 || {
@@ -371,32 +393,42 @@ log_device_holders() {
 device_capture_test_ok() {
   local device=$1
 
-  timeout 6s gst-launch-1.0 -q \
-    v4l2src "device=$device" num-buffers=1 \
-    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1" \
-    ! fakesink sync=false >/dev/null 2>&1
+  PIPELINE=(gst-launch-1.0 -q)
+  append_source_pipeline "$device" 1
+  PIPELINE+=(! fakesink sync=false)
+
+  timeout 6s "${PIPELINE[@]}" >/dev/null 2>&1
 }
 
 device_encode_test_ok() {
   local device=$1
 
-  timeout 8s gst-launch-1.0 -q \
-    v4l2src "device=$device" num-buffers=45 \
-    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1" \
+  PIPELINE=(gst-launch-1.0 -q)
+  append_source_pipeline "$device" 45
+  PIPELINE+=(
     ! mpph264enc "bps=$BITRATE" "gop=$GOP" "profile=$H264_PROFILE" "header-mode=$H264_HEADER_MODE" \
     ! h264parse config-interval=1 \
-    ! fakesink sync=false >/dev/null 2>&1
+    ! fakesink sync=false
+  )
+
+  timeout 8s "${PIPELINE[@]}" >/dev/null 2>&1
 }
 
 device_try_fmt_ok() {
   local device=$1
+  local pixelformat
   local output
 
-  output=$(v4l2-ctl -d "$device" --try-fmt-video=width="$WIDTH",height="$HEIGHT",pixelformat=NV12 2>/dev/null || true)
+  case "$INPUT_FORMAT" in
+    nv12) pixelformat=NV12 ;;
+    mjpg) pixelformat=MJPG ;;
+  esac
+
+  output=$(v4l2-ctl -d "$device" --try-fmt-video=width="$WIDTH",height="$HEIGHT",pixelformat="$pixelformat" 2>/dev/null || true)
   [[ -n "$output" ]] || return 1
 
   grep -q "Width/Height[[:space:]]*:[[:space:]]*$WIDTH/$HEIGHT" <<<"$output" || return 1
-  grep -q "Pixel Format[[:space:]]*:[[:space:]]*'NV12'" <<<"$output" || return 1
+  grep -q "Pixel Format[[:space:]]*:[[:space:]]*'$pixelformat'" <<<"$output" || return 1
 }
 
 device_stream_test_ok() {
@@ -418,6 +450,8 @@ device_is_rkisp_mainpath() {
 find_best_device() {
   local device
   local preferred_devices=(
+    /dev/openrd-cam-uvc
+    /dev/v4l/by-id/usb-LHGX-250930-FAY_SPCA2650_AV_Cam_01.00.00-video-index0
     /dev/openrd-cam-front
     /dev/openrd-cam-rear
     /dev/v4l/by-path/platform-rkisp0-vir0-video-index0
@@ -452,7 +486,7 @@ resolve_device() {
     fi
 
     if ! device_try_fmt_ok "$requested"; then
-      echo "video device $requested does not support ${WIDTH}x${HEIGHT} NV12" >&2
+      echo "video device $requested does not support ${WIDTH}x${HEIGHT} $INPUT_FORMAT" >&2
       exit 1
     fi
 
@@ -465,9 +499,38 @@ resolve_device() {
   fi
 
   if [[ "$requested" == "auto" ]]; then
-    echo "no rkisp_mainpath device supports ${WIDTH}x${HEIGHT} NV12" >&2
+    echo "no rkisp_mainpath device supports ${WIDTH}x${HEIGHT} $INPUT_FORMAT" >&2
   fi
   exit 1
+}
+
+append_source_pipeline() {
+  local pipeline_device=$1
+  local buffers=${2:-$BUFFERS}
+
+  PIPELINE+=(
+    v4l2src "device=$pipeline_device"
+  )
+
+  if [[ "$buffers" != "0" ]]; then
+    PIPELINE+=("num-buffers=$buffers")
+  fi
+
+  case "$INPUT_FORMAT" in
+    nv12)
+      PIPELINE+=(
+        ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1"
+      )
+      ;;
+    mjpg)
+      PIPELINE+=(
+        ! "image/jpeg,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1"
+        ! jpegdec
+        ! videoconvert
+        ! "video/x-raw,format=NV12"
+      )
+      ;;
+  esac
 }
 
 build_pipeline() {
@@ -475,15 +538,9 @@ build_pipeline() {
 
   PIPELINE=(
     gst-launch-1.0 -e
-    v4l2src "device=$pipeline_device"
   )
-
-  if [[ "$BUFFERS" != "0" ]]; then
-    PIPELINE+=("num-buffers=$BUFFERS")
-  fi
-
+  append_source_pipeline "$pipeline_device" "$BUFFERS"
   PIPELINE+=(
-    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1"
     ! mpph264enc "bps=$BITRATE" "gop=$GOP" "profile=$H264_PROFILE" "header-mode=$H264_HEADER_MODE"
     ! queue
     ! h264parse config-interval=1
@@ -543,6 +600,7 @@ load_state_defaults() {
 
 MODE=$(state_value MODE "$MODE")
 DEVICE=$(state_value DEVICE "$DEVICE")
+  INPUT_FORMAT=$(state_value INPUT_FORMAT "$INPUT_FORMAT")
   WIDTH=$(state_value WIDTH "$WIDTH")
   HEIGHT=$(state_value HEIGHT "$HEIGHT")
   FPS=$(state_value FPS "$FPS")
@@ -583,6 +641,7 @@ PID=$pid
 MODE=$MODE
 DEVICE=$DEVICE
 ACTUAL_DEVICE=$(actual_device)
+INPUT_FORMAT=$INPUT_FORMAT
 WIDTH=$WIDTH
 HEIGHT=$HEIGHT
 FPS=$FPS
@@ -628,7 +687,7 @@ status_text() {
   fi
 
   if [[ -f "$STATE_FILE" ]]; then
-    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
+    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|INPUT_FORMAT|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
   else
     echo "  state_file: missing"
   fi
@@ -650,10 +709,11 @@ status_json() {
     fi
   fi
 
-  local mode device actual_device width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
+  local mode device actual_device input_format width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
   mode=$(state_value MODE "$MODE")
   device=$(state_value DEVICE "$DEVICE")
   actual_device=$(state_value ACTUAL_DEVICE "$(actual_device)")
+  input_format=$(state_value INPUT_FORMAT "$INPUT_FORMAT")
   width=$(state_value WIDTH "$WIDTH")
   height=$(state_value HEIGHT "$HEIGHT")
   fps=$(state_value FPS "$FPS")
@@ -678,7 +738,7 @@ status_json() {
   fi
 
   cat <<EOF
-{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
+{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","input_format":"$(json_escape "$input_format")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
 EOF
 }
 

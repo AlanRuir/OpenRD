@@ -1,8 +1,12 @@
-# OpenRD stable CSI camera aliases on RK3588
+# OpenRD stable camera aliases on RK3588
 #
-# rkisp0 and rkisp1 are the two CSI capture pipelines. The /dev/videoNN node
-# numbers can drift across boots, so downstream code should bind to by-path or
-# these explicit aliases instead of raw /dev/video22 or /dev/video31.
+# /dev/videoNN node numbers can drift across boots, so downstream code should
+# bind to stable aliases instead of raw /dev/videoXX names.
 
+# Default UVC camera: Sunplus SPCA2650 AV Cam.
+SUBSYSTEM=="video4linux", ENV{ID_VENDOR_ID}=="1bcf", ENV{ID_MODEL_ID}=="b112", ENV{ID_V4L_CAPABILITIES}=="*:capture:*", SYMLINK+="openrd-cam-uvc"
+
+# Optional CSI camera aliases. These are not the default path because the
+# current RK ISP / IMX415 chain has shown intermittent stream instability.
 SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-rkisp0-vir0", ENV{ID_V4L_PRODUCT}=="rkisp_mainpath", SYMLINK+="openrd-cam-front"
 SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-rkisp1-vir0", ENV{ID_V4L_PRODUCT}=="rkisp_mainpath", SYMLINK+="openrd-cam-rear"

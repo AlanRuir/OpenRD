@@ -27,8 +27,10 @@
 当前长期运行链路：
 
 ```text
-/dev/openrd-cam-front
-  -> v4l2src
+/dev/openrd-cam-uvc
+  -> v4l2src MJPG
+  -> jpegdec
+  -> videoconvert NV12
   -> mpph264enc
   -> h264parse
   -> rtspclientsink rtsp://127.0.0.1:8554/live
@@ -52,8 +54,8 @@ OPENRD_BOARD_IP=192.168.100.108 bash tools/rk3588/configure_openrd_mediamtx.sh
 安装后确认开机自启动：
 
 ```bash
-systemctl is-enabled openrd-video-native.service mediamtx.service rkaiq_3A.service
-systemctl is-active openrd-video-native.service mediamtx.service rkaiq_3A.service
+systemctl is-enabled openrd-video-native.service mediamtx.service
+systemctl is-active openrd-video-native.service mediamtx.service
 ```
 
 ## 长时间监测实验
@@ -85,7 +87,8 @@ vehicle/native_video/run/monitor/
 
 判读方式：
 
-- `rtsp_frame=fail` 且 kernel 有 `rkcif` / `rkisp` / `imx415`，优先看 RK camera/ISP 链路；
+- `rtsp_frame=fail` 且 kernel 有 `uvcvideo` / USB disconnect，优先看 UVC 摄像头、线缆和 USB 口；
+- CSI 调试时如果 kernel 有 `rkcif` / `rkisp` / `imx415`，优先看 RK camera/ISP 链路；
 - `rtsp_frame=ok` 但浏览器无画面，优先看 MediaMTX/WebRTC/ICE；
 - `services_active` 不是 `active|active|active`，先看对应 systemd service；
 - 浏览器 404 通常对应 MediaMTX 暂时没有 `live` publisher，可在日志中查 `no stream is available on path 'live'`。
@@ -95,5 +98,5 @@ vehicle/native_video/run/monitor/
 - 脚本需要在 RK3588 上运行；
 - 需要 `sudo` 权限；
 - 脚本设置 `FASTDDS_BUILTIN_TRANSPORTS=UDPv4`，用于规避 chroot 下 FastDDS shared memory 权限噪声；
-- RTSP 健康检查必须读到真实视频帧才算通过；默认只做有限自恢复：视频 runtime 最多健康重启 1 次，`rkaiq_3A.service` 最多重启 1 次，仍失败则进入 `faulted` 并以退出码 42 停止 systemd 自动重启；
+- RTSP 健康检查必须读到真实视频帧才算通过；当前 UVC 调试阶段默认关闭自动健康重启，可按需要重新打开有限自恢复；
 - 真实接 ESP32 前，保持 `serial.yaml` 中的 `dry_run: true`。

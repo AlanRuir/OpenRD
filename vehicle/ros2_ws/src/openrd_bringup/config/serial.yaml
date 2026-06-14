@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    port: /dev/ttyS0
+    baudrate: 115200
+    dry_run: true
+    esp32_timeout_ms: 500
+    publish_hz: 20.0

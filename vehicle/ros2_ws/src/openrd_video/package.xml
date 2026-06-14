@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>openrd_video</name>
+  <version>0.1.0</version>
+  <description>Video pipeline management package for OpenRD.</description>
+  <maintainer email="alan@example.local">Alan</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>openrd_msgs</depend>
+  <depend>std_srvs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

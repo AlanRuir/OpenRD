@@ -1,0 +1,91 @@
+# OS / editor noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Logs and local run output
+*.log
+*.out.log
+*.err.log
+*.pid
+*.tmp
+*.temp
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# ROS2 / colcon
+**/build/
+**/install/
+**/log/
+.vehicle_ros2_build/
+
+# Flutter / Dart / Pub
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/coverage/
+**/doc/api/
+**/app.*.symbols
+**/app.*.map.json
+
+# Keep lockfiles only when the package intentionally tracks them.
+# For this repo's Flutter prototype, local pub resolution is not committed.
+pubspec.lock
+**/pubspec.lock
+
+# Flutter platform build products
+frontend/openrd_frontend/android/.gradle/
+frontend/openrd_frontend/android/captures/
+frontend/openrd_frontend/android/app/debug/
+frontend/openrd_frontend/android/app/profile/
+frontend/openrd_frontend/android/app/release/
+frontend/openrd_frontend/android/app/.cxx/
+frontend/openrd_frontend/android/local.properties
+frontend/openrd_frontend/android/key.properties
+frontend/openrd_frontend/android/**/*.keystore
+frontend/openrd_frontend/android/**/*.jks
+frontend/openrd_frontend/ios/Flutter/ephemeral/
+frontend/openrd_frontend/ios/Flutter/Generated.xcconfig
+frontend/openrd_frontend/ios/Flutter/flutter_export_environment.sh
+frontend/openrd_frontend/ios/Pods/
+frontend/openrd_frontend/ios/**/DerivedData/
+frontend/openrd_frontend/ios/**/xcuserdata/
+frontend/openrd_frontend/ios/**/.symlinks/
+
+# Native video runtime artifacts
+vehicle/native_video/run/
+*.h264
+*.mp4
+*.mkv
+
+# Node / web tooling, reserved for later server/frontend work
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local secrets and environment overrides
+.env
+.env.*
+*.local
+!.env.example

@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+HOST_PROJECT=${OPENRD_HOST_PROJECT:-/home/linaro/OpenRD}
+CHROOT_PROJECT=${OPENRD_CHROOT_PROJECT:-/workspace/OpenRD}
+SERVICE_NAME=${OPENRD_VIDEO_SERVICE_NAME:-openrd-video-native.service}
+
+NATIVE_CLI=${OPENRD_VIDEO_NATIVE_CLI:-$CHROOT_PROJECT/vehicle/native_video/openrd-video-native}
+STATE_DIR=${OPENRD_VIDEO_STATE_DIR:-$CHROOT_PROJECT/vehicle/native_video/run}
+LOG_FILE=${OPENRD_VIDEO_LOG:-$STATE_DIR/openrd-video-native.log}
+SERVICE_ENV_FILE=${OPENRD_VIDEO_SERVICE_ENV_FILE:-$STATE_DIR/openrd-video-native-service.env}
+
+HOST_STATE_DIR=${OPENRD_VIDEO_HOST_STATE_DIR:-$HOST_PROJECT/vehicle/native_video/run}
+HOST_LOG_FILE=${OPENRD_VIDEO_HOST_LOG:-$HOST_STATE_DIR/openrd-video-native.log}
+
+COMMAND=${1:-help}
+shift || true
+
+MODE=rtsp
+DEVICE=/dev/openrd-cam-front
+WIDTH=1280
+HEIGHT=720
+FPS=30
+BITRATE=2000000
+GOP=30
+OUTPUT=/tmp/openrd_camera_test.h264
+RTSP_URL=${OPENRD_VIDEO_RTSP_URL:-rtsp://127.0.0.1:8554/live}
+RTSP_PROTOCOLS=${OPENRD_VIDEO_RTSP_PROTOCOLS:-tcp}
+RTSP_LATENCY_MS=${OPENRD_VIDEO_RTSP_LATENCY_MS:-100}
+RTSP_HEALTHCHECK_TIMEOUT_SEC=${OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC:-12}
+HLS_HEALTHCHECK_URL=${OPENRD_VIDEO_HLS_HEALTHCHECK_URL:-http://127.0.0.1:8888/live/index.m3u8}
+HEALTHCHECK_FAILURES=${OPENRD_VIDEO_HEALTHCHECK_FAILURES:-0}
+MPEGTS_HOST=${OPENRD_VIDEO_MPEGTS_HOST:-127.0.0.1}
+MPEGTS_PORT=${OPENRD_VIDEO_MPEGTS_PORT:-5004}
+RTP_HOST=${OPENRD_VIDEO_RTP_HOST:-127.0.0.1}
+RTP_PORT=${OPENRD_VIDEO_RTP_PORT:-5004}
+RTP_PAYLOAD_TYPE=${OPENRD_VIDEO_RTP_PAYLOAD_TYPE:-96}
+RTP_MTU=${OPENRD_VIDEO_RTP_MTU:-1200}
+
+usage() {
+  cat <<'EOF'
+OpenRD Video Systemd Wrapper v0.1
+
+用途：
+  这个脚本在 Ubuntu 22.04 ROS2 chroot 内运行，负责通过宿主 Debian 的 systemd
+  启停真正的 openrd-video-native 视频进程。
+
+常用命令：
+  openrd-video-systemd start [options]
+  openrd-video-systemd stop
+  openrd-video-systemd restart [options]
+  openrd-video-systemd status --json
+  openrd-video-systemd pipeline [options]
+
+注意：
+  start/stop/restart 需要先在宿主安装 openrd-video-native.service，且 chroot 内
+  linaro 用户具备免密码 sudo systemctl 权限。
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode)
+        MODE=${2:?missing value for --mode}; shift 2 ;;
+      --device)
+        DEVICE=${2:?missing value for --device}; shift 2 ;;
+      --width)
+        WIDTH=${2:?missing value for --width}; shift 2 ;;
+      --height)
+        HEIGHT=${2:?missing value for --height}; shift 2 ;;
+      --fps)
+        FPS=${2:?missing value for --fps}; shift 2 ;;
+      --bitrate)
+        BITRATE=${2:?missing value for --bitrate}; shift 2 ;;
+      --gop)
+        GOP=${2:?missing value for --gop}; shift 2 ;;
+      --output)
+        OUTPUT=${2:?missing value for --output}; shift 2 ;;
+      --rtsp-url)
+        RTSP_URL=${2:?missing value for --rtsp-url}; shift 2 ;;
+      --rtsp-protocols)
+        RTSP_PROTOCOLS=${2:?missing value for --rtsp-protocols}; shift 2 ;;
+      --rtsp-latency-ms)
+        RTSP_LATENCY_MS=${2:?missing value for --rtsp-latency-ms}; shift 2 ;;
+      --rtsp-healthcheck-timeout-sec)
+        RTSP_HEALTHCHECK_TIMEOUT_SEC=${2:?missing value for --rtsp-healthcheck-timeout-sec}; shift 2 ;;
+      --hls-healthcheck-url)
+        HLS_HEALTHCHECK_URL=${2:?missing value for --hls-healthcheck-url}; shift 2 ;;
+      --mpegts-host)
+        MPEGTS_HOST=${2:?missing value for --mpegts-host}; shift 2 ;;
+      --mpegts-port)
+        MPEGTS_PORT=${2:?missing value for --mpegts-port}; shift 2 ;;
+      --rtp-host)
+        RTP_HOST=${2:?missing value for --rtp-host}; shift 2 ;;
+      --rtp-port)
+        RTP_PORT=${2:?missing value for --rtp-port}; shift 2 ;;
+      --rtp-pt|--rtp-payload-type)
+        RTP_PAYLOAD_TYPE=${2:?missing value for --rtp-pt}; shift 2 ;;
+      --rtp-mtu)
+        RTP_MTU=${2:?missing value for --rtp-mtu}; shift 2 ;;
+      --state-dir)
+        STATE_DIR=${2:?missing value for --state-dir}
+        SERVICE_ENV_FILE="$STATE_DIR/openrd-video-native-service.env"
+        shift 2 ;;
+      --log)
+        LOG_FILE=${2:?missing value for --log}; shift 2 ;;
+      --json)
+        shift ;;
+      -h|--help)
+        usage; exit 0 ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 2 ;;
+    esac
+  done
+}
+
+require_native_cli() {
+  if [[ ! -x "$NATIVE_CLI" ]]; then
+    echo "native CLI not found in chroot view: $NATIVE_CLI" >&2
+    exit 1
+  fi
+}
+
+write_service_env() {
+  mkdir -p "$STATE_DIR"
+  cat > "$SERVICE_ENV_FILE" <<EOF
+OPENRD_VIDEO_MODE=$MODE
+OPENRD_VIDEO_DEVICE=$DEVICE
+OPENRD_VIDEO_WIDTH=$WIDTH
+OPENRD_VIDEO_HEIGHT=$HEIGHT
+OPENRD_VIDEO_FPS=$FPS
+OPENRD_VIDEO_BITRATE=$BITRATE
+OPENRD_VIDEO_GOP=$GOP
+OPENRD_VIDEO_OUTPUT=$OUTPUT
+OPENRD_VIDEO_RTSP_URL=$RTSP_URL
+OPENRD_VIDEO_RTSP_PROTOCOLS=$RTSP_PROTOCOLS
+OPENRD_VIDEO_RTSP_LATENCY_MS=$RTSP_LATENCY_MS
+OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC=$RTSP_HEALTHCHECK_TIMEOUT_SEC
+OPENRD_VIDEO_HLS_HEALTHCHECK_URL=$HLS_HEALTHCHECK_URL
+OPENRD_VIDEO_HEALTHCHECK_FAILURES=$HEALTHCHECK_FAILURES
+OPENRD_VIDEO_MPEGTS_HOST=$MPEGTS_HOST
+OPENRD_VIDEO_MPEGTS_PORT=$MPEGTS_PORT
+OPENRD_VIDEO_RTP_HOST=$RTP_HOST
+OPENRD_VIDEO_RTP_PORT=$RTP_PORT
+OPENRD_VIDEO_RTP_PAYLOAD_TYPE=$RTP_PAYLOAD_TYPE
+OPENRD_VIDEO_RTP_MTU=$RTP_MTU
+OPENRD_VIDEO_STATE_DIR=$HOST_STATE_DIR
+OPENRD_VIDEO_LOG=$HOST_LOG_FILE
+EOF
+}
+
+systemctl_sudo() {
+  SYSTEMD_IGNORE_CHROOT=1 sudo -n -E systemctl "$@" "$SERVICE_NAME"
+}
+
+runtime_status() {
+  require_native_cli
+  OPENRD_VIDEO_STATE_DIR="$STATE_DIR" OPENRD_VIDEO_LOG="$LOG_FILE" "$NATIVE_CLI" status --json
+}
+
+wait_for_state() {
+  local expected=$1
+  local status
+  for _ in $(seq 1 30); do
+    status=$(runtime_status)
+    case "$expected:$status" in
+      running:*'"runtime_running":true'*)
+        echo "$status"
+        return 0 ;;
+      stopped:*'"runtime_running":false'*)
+        echo "$status"
+        return 0 ;;
+    esac
+    sleep 0.1
+  done
+  runtime_status
+}
+
+main() {
+  case "$COMMAND" in
+    help|-h|--help)
+      usage ;;
+    status)
+      parse_args "$@"
+      runtime_status ;;
+    pipeline)
+      require_native_cli
+      OPENRD_VIDEO_STATE_DIR="$STATE_DIR" OPENRD_VIDEO_LOG="$LOG_FILE" "$NATIVE_CLI" pipeline "$@" ;;
+    start)
+      parse_args "$@"
+      write_service_env
+      systemctl_sudo start >/dev/null
+      wait_for_state running ;;
+    stop)
+      parse_args "$@"
+      systemctl_sudo stop >/dev/null
+      wait_for_state stopped ;;
+    restart)
+      parse_args "$@"
+      write_service_env
+      systemctl_sudo restart >/dev/null
+      wait_for_state running ;;
+    run|test)
+      echo "$COMMAND must be executed on native Debian with openrd-video-native" >&2
+      exit 2 ;;
+    *)
+      echo "unknown command: $COMMAND" >&2
+      usage >&2
+      exit 2 ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,8 @@
+# OpenRD stable CSI camera aliases on RK3588
+#
+# rkisp0 and rkisp1 are the two CSI capture pipelines. The /dev/videoNN node
+# numbers can drift across boots, so downstream code should bind to by-path or
+# these explicit aliases instead of raw /dev/video22 or /dev/video31.
+
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-rkisp0-vir0", ENV{ID_V4L_PRODUCT}=="rkisp_mainpath", SYMLINK+="openrd-cam-front"
+SUBSYSTEM=="video4linux", ENV{ID_PATH}=="platform-rkisp1-vir0", ENV{ID_V4L_PRODUCT}=="rkisp_mainpath", SYMLINK+="openrd-cam-rear"

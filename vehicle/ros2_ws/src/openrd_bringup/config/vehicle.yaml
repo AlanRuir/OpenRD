@@ -1,0 +1,4 @@
+/**:
+  ros__parameters:
+    vehicle_name: openrd-rk3588
+    control_hz: 20.0

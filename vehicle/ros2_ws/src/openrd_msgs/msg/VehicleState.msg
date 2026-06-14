@@ -1,0 +1,13 @@
+uint32 seq
+builtin_interfaces/Time stamp
+string state
+bool ws_connected
+bool ros2_ok
+bool esp32_connected
+uint32 last_drive_seq
+bool failsafe
+bool estop
+int32 battery_mv
+float32 left_output
+float32 right_output
+string message

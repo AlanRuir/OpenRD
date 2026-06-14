@@ -1,0 +1,3 @@
+# OpenRD: allow the chroot ROS2 video node to manage only the native video service.
+Defaults:linaro env_keep += "SYSTEMD_IGNORE_CHROOT"
+linaro ALL=(root) SETENV: NOPASSWD: /bin/systemctl start openrd-video-native.service, /bin/systemctl stop openrd-video-native.service, /bin/systemctl restart openrd-video-native.service, /bin/systemctl restart rkaiq_3A.service, /usr/bin/systemctl start openrd-video-native.service, /usr/bin/systemctl stop openrd-video-native.service, /usr/bin/systemctl restart openrd-video-native.service, /usr/bin/systemctl restart rkaiq_3A.service

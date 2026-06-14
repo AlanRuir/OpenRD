@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>openrd_bringup</name>
+  <version>0.1.0</version>
+  <description>Launch and configuration files for OpenRD vehicle runtime.</description>
+  <maintainer email="alan@example.local">Alan</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>openrd_web_bridge</exec_depend>
+  <exec_depend>openrd_safety</exec_depend>
+  <exec_depend>openrd_esp32_bridge</exec_depend>
+  <exec_depend>openrd_video</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

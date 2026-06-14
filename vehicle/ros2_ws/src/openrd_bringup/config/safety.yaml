@@ -1,0 +1,7 @@
+/**:
+  ros__parameters:
+    control_timeout_ms: 300
+    publish_hz: 20.0
+    max_output: 0.4
+    deadzone: 0.05
+    require_zero_before_reset_estop: true

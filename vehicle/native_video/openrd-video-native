@@ -1,0 +1,1035 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+STATE_DIR=${OPENRD_VIDEO_STATE_DIR:-"$SCRIPT_DIR/run"}
+PID_FILE="$STATE_DIR/openrd-video-native.pid"
+STATE_FILE="$STATE_DIR/openrd-video-native.env"
+LOG_FILE=${OPENRD_VIDEO_LOG:-"$STATE_DIR/openrd-video-native.log"}
+HEALTHCHECK_INTERVAL_SEC=${OPENRD_VIDEO_HEALTHCHECK_INTERVAL_SEC:-5}
+HEALTHCHECK_FAILURES=${OPENRD_VIDEO_HEALTHCHECK_FAILURES:-3}
+HEALTHCHECK_STARTUP_GRACE_SEC=${OPENRD_VIDEO_HEALTHCHECK_STARTUP_GRACE_SEC:-10}
+RTSP_HEALTHCHECK_TIMEOUT_SEC=${OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC:-12}
+RESTART_DELAY_SEC=${OPENRD_VIDEO_RESTART_DELAY_SEC:-2}
+RAPID_RESTART_WINDOW_SEC=${OPENRD_VIDEO_RAPID_RESTART_WINDOW_SEC:-15}
+RESTART_BACKOFF_MAX_SEC=${OPENRD_VIDEO_RESTART_BACKOFF_MAX_SEC:-16}
+MAX_HEALTH_RESTARTS=${OPENRD_VIDEO_MAX_HEALTH_RESTARTS:-1}
+RKAIQ_SERVICE=${OPENRD_VIDEO_RKAIQ_SERVICE:-rkaiq_3A.service}
+RKAIQ_RESTART_AFTER_HEALTH_RESTARTS=${OPENRD_VIDEO_RKAIQ_RESTART_AFTER_HEALTH_RESTARTS:-0}
+MAX_RKAIQ_RESTARTS=${OPENRD_VIDEO_MAX_RKAIQ_RESTARTS:-1}
+RKAIQ_RESTART_DELAY_SEC=${OPENRD_VIDEO_RKAIQ_RESTART_DELAY_SEC:-3}
+FAULT_EXIT_CODE=${OPENRD_VIDEO_FAULT_EXIT_CODE:-42}
+
+COMMAND=${1:-help}
+shift || true
+
+MODE=fakesink
+DEVICE=auto
+WIDTH=1280
+HEIGHT=720
+FPS=30
+BITRATE=2000000
+GOP=30
+OUTPUT=/tmp/openrd_camera_test.h264
+BUFFERS=0
+H264_PROFILE=${OPENRD_VIDEO_H264_PROFILE:-baseline}
+H264_HEADER_MODE=${OPENRD_VIDEO_H264_HEADER_MODE:-each-idr}
+RTSP_URL=${OPENRD_VIDEO_RTSP_URL:-rtsp://127.0.0.1:8554/live}
+HLS_HEALTHCHECK_URL=${OPENRD_VIDEO_HLS_HEALTHCHECK_URL:-}
+RTSP_PROTOCOLS=${OPENRD_VIDEO_RTSP_PROTOCOLS:-tcp}
+RTSP_LATENCY_MS=${OPENRD_VIDEO_RTSP_LATENCY_MS:-100}
+MPEGTS_HOST=${OPENRD_VIDEO_MPEGTS_HOST:-127.0.0.1}
+MPEGTS_PORT=${OPENRD_VIDEO_MPEGTS_PORT:-5004}
+RTP_HOST=${OPENRD_VIDEO_RTP_HOST:-127.0.0.1}
+RTP_PORT=${OPENRD_VIDEO_RTP_PORT:-5004}
+RTP_PAYLOAD_TYPE=${OPENRD_VIDEO_RTP_PAYLOAD_TYPE:-96}
+RTP_MTU=${OPENRD_VIDEO_RTP_MTU:-1200}
+RESOLVED_DEVICE=
+
+usage() {
+  cat <<'EOF'
+OpenRD Native Video Runtime v0.1
+
+用法:
+  openrd-video-native test [选项]
+  openrd-video-native run [选项]
+  openrd-video-native start [选项]
+  openrd-video-native stop
+  openrd-video-native restart [选项]
+  openrd-video-native status [--json]
+  openrd-video-native pipeline [选项]
+
+命令:
+  test      前台运行短时摄像头 + MPP H.264 编码测试，默认 60 帧后退出。
+  run       前台运行 pipeline，便于调试 GStreamer 输出。
+  start     后台启动 pipeline，并写入 PID、状态和日志。
+  stop      停止后台 pipeline。
+  restart   stop 后重新 start。
+  status    查看当前状态。
+  pipeline  打印当前参数对应的 gst-launch 命令。
+
+选项:
+  --mode fakesink|file|mpegts|rtp|rtsp
+                           输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX。
+  --device PATH|auto       V4L2 设备；`auto` 会自动选择可用的 `rkisp_mainpath` 节点。
+  --width N                宽度，默认 1280。
+  --height N               高度，默认 720。
+  --fps N                  帧率，默认 30。
+  --bitrate N              H.264 码率 bps，默认 2000000。
+  --gop N                  GOP，默认 30。
+  --output PATH            file 模式输出路径，默认 /tmp/openrd_camera_test.h264。
+  --rtsp-url URL           RTSP 播放/发布地址。rtp 模式下仅用于状态展示；rtsp 模式下作为 publisher 目标。
+  --rtsp-protocols tcp|udp RTSP publisher 传输方式，默认 tcp。
+  --rtsp-latency-ms N      RTSP publisher latency，默认 100。
+  --mpegts-host HOST       mpegts 模式下 MediaMTX UDP MPEG-TS 输入地址，默认 127.0.0.1。
+  --mpegts-port N          mpegts 模式下 MediaMTX UDP MPEG-TS 输入端口，默认 5004。
+  --rtp-host HOST          rtp 模式下 MediaMTX RTP 输入地址，默认 127.0.0.1。
+  --rtp-port N             rtp 模式下 MediaMTX RTP 输入端口，默认 5004。
+  --rtp-pt N               rtp 模式下 RTP payload type，默认 96。
+  --rtp-mtu N              rtp 模式下 RTP MTU，默认 1200。
+  --buffers N              test/run 模式可选帧数限制；0 表示不限制。
+  --state-dir PATH         状态目录，默认 vehicle/native_video/run。
+  --log PATH               日志文件，默认 state-dir/openrd-video-native.log。
+  -h, --help               显示帮助。
+
+示例:
+  ./openrd-video-native test
+  ./openrd-video-native start --mode fakesink
+  ./openrd-video-native start --mode file --output /tmp/openrd_camera_test.h264
+  ./openrd-video-native status
+  ./openrd-video-native stop
+EOF
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --mode)
+        MODE=${2:?missing value for --mode}; shift 2 ;;
+      --device)
+        DEVICE=${2:?missing value for --device}; shift 2 ;;
+      --width)
+        WIDTH=${2:?missing value for --width}; shift 2 ;;
+      --height)
+        HEIGHT=${2:?missing value for --height}; shift 2 ;;
+      --fps)
+        FPS=${2:?missing value for --fps}; shift 2 ;;
+      --bitrate)
+        BITRATE=${2:?missing value for --bitrate}; shift 2 ;;
+      --gop)
+        GOP=${2:?missing value for --gop}; shift 2 ;;
+      --output)
+        OUTPUT=${2:?missing value for --output}; shift 2 ;;
+      --rtsp-url)
+        RTSP_URL=${2:?missing value for --rtsp-url}; shift 2 ;;
+      --rtsp-protocols)
+        RTSP_PROTOCOLS=${2:?missing value for --rtsp-protocols}; shift 2 ;;
+      --rtsp-latency-ms)
+        RTSP_LATENCY_MS=${2:?missing value for --rtsp-latency-ms}; shift 2 ;;
+      --mpegts-host)
+        MPEGTS_HOST=${2:?missing value for --mpegts-host}; shift 2 ;;
+      --mpegts-port)
+        MPEGTS_PORT=${2:?missing value for --mpegts-port}; shift 2 ;;
+      --rtp-host)
+        RTP_HOST=${2:?missing value for --rtp-host}; shift 2 ;;
+      --rtp-port)
+        RTP_PORT=${2:?missing value for --rtp-port}; shift 2 ;;
+      --rtp-pt|--rtp-payload-type)
+        RTP_PAYLOAD_TYPE=${2:?missing value for --rtp-pt}; shift 2 ;;
+      --rtp-mtu)
+        RTP_MTU=${2:?missing value for --rtp-mtu}; shift 2 ;;
+      --buffers)
+        BUFFERS=${2:?missing value for --buffers}; shift 2 ;;
+      --state-dir)
+        STATE_DIR=${2:?missing value for --state-dir}
+        PID_FILE="$STATE_DIR/openrd-video-native.pid"
+        STATE_FILE="$STATE_DIR/openrd-video-native.env"
+        LOG_FILE=${OPENRD_VIDEO_LOG:-"$STATE_DIR/openrd-video-native.log"}
+        shift 2 ;;
+      --log)
+        LOG_FILE=${2:?missing value for --log}; shift 2 ;;
+      -h|--help)
+        usage; exit 0 ;;
+      *)
+        echo "unknown option: $1" >&2
+        usage >&2
+        exit 2 ;;
+    esac
+  done
+}
+
+validate_number() {
+  local name=$1
+  local value=$2
+  if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+    echo "$name must be a non-negative integer: $value" >&2
+    exit 2
+  fi
+}
+
+validate_positive_number() {
+  local name=$1
+  local value=$2
+  validate_number "$name" "$value"
+  if (( value < 1 )); then
+    echo "$name must be a positive integer: $value" >&2
+    exit 2
+  fi
+}
+
+validate_port() {
+  local name=$1
+  local value=$2
+  validate_number "$name" "$value"
+  if (( value < 1 || value > 65535 )); then
+    echo "$name must be in range 1..65535: $value" >&2
+    exit 2
+  fi
+}
+
+validate_args() {
+  case "$MODE" in
+    fakesink|file|mpegts|rtp|rtsp) ;;
+    webrtc)
+      echo "mode '$MODE' is reserved for later versions" >&2
+      exit 2 ;;
+    *)
+      echo "unsupported mode: $MODE" >&2
+      exit 2 ;;
+  esac
+
+  validate_number width "$WIDTH"
+  validate_number height "$HEIGHT"
+  validate_number fps "$FPS"
+  validate_number bitrate "$BITRATE"
+  validate_number gop "$GOP"
+  validate_number buffers "$BUFFERS"
+  validate_number rtsp-latency-ms "$RTSP_LATENCY_MS"
+  validate_port mpegts-port "$MPEGTS_PORT"
+  validate_positive_number restart-delay-sec "$RESTART_DELAY_SEC"
+  validate_positive_number rapid-restart-window-sec "$RAPID_RESTART_WINDOW_SEC"
+  validate_positive_number restart-backoff-max-sec "$RESTART_BACKOFF_MAX_SEC"
+  validate_number max-health-restarts "$MAX_HEALTH_RESTARTS"
+  validate_number rkaiq-restart-after-health-restarts "$RKAIQ_RESTART_AFTER_HEALTH_RESTARTS"
+  validate_number max-rkaiq-restarts "$MAX_RKAIQ_RESTARTS"
+  validate_positive_number rkaiq-restart-delay-sec "$RKAIQ_RESTART_DELAY_SEC"
+  validate_positive_number fault-exit-code "$FAULT_EXIT_CODE"
+  validate_port rtp-port "$RTP_PORT"
+  validate_number rtp-pt "$RTP_PAYLOAD_TYPE"
+  validate_number rtp-mtu "$RTP_MTU"
+
+  if [[ "$MODE" == "rtsp" && ! "$RTSP_URL" =~ ^rtsp(s)?:// ]]; then
+    echo "rtsp mode requires an rtsp:// or rtsps:// URL: $RTSP_URL" >&2
+    exit 2
+  fi
+
+  if (( RTP_PAYLOAD_TYPE > 127 )); then
+    echo "rtp-pt must be in range 0..127: $RTP_PAYLOAD_TYPE" >&2
+    exit 2
+  fi
+
+  case "$H264_PROFILE" in
+    baseline|main|high) ;;
+    *)
+      echo "unsupported H264 profile: $H264_PROFILE" >&2
+      exit 2 ;;
+  esac
+
+  case "$H264_HEADER_MODE" in
+    first-frame|each-idr) ;;
+    *)
+      echo "unsupported H264 header mode: $H264_HEADER_MODE" >&2
+      exit 2 ;;
+  esac
+}
+
+check_dependencies() {
+  command -v gst-launch-1.0 >/dev/null || {
+    echo "gst-launch-1.0 not found; run this on RK3588 native Debian system" >&2
+    exit 1
+  }
+
+  command -v gst-inspect-1.0 >/dev/null || {
+    echo "gst-inspect-1.0 not found; run this on RK3588 native Debian system" >&2
+    exit 1
+  }
+
+  command -v v4l2-ctl >/dev/null || {
+    echo "v4l2-ctl not found; install v4l-utils on RK3588 native Debian system" >&2
+    exit 1
+  }
+
+  command -v timeout >/dev/null || {
+    echo "timeout not found; coreutils is required for runtime health checks" >&2
+    exit 1
+  }
+
+  gst-inspect-1.0 mpph264enc >/dev/null 2>&1 || {
+    echo "mpph264enc not found; Rockchip MPP GStreamer plugin is unavailable" >&2
+    exit 1
+  }
+
+  if [[ "$MODE" == "rtsp" ]]; then
+    gst-inspect-1.0 rtspclientsink >/dev/null 2>&1 || {
+      echo "rtspclientsink not found; install GStreamer RTSP client sink plugin" >&2
+      exit 1
+    }
+
+    command -v ffmpeg >/dev/null || command -v ffprobe >/dev/null || {
+      echo "ffmpeg or ffprobe not found; install ffmpeg for RTSP runtime health checks" >&2
+      exit 1
+    }
+  fi
+
+  if [[ "$MODE" == "mpegts" ]]; then
+    gst-inspect-1.0 mpegtsmux >/dev/null 2>&1 || {
+      echo "mpegtsmux not found; install GStreamer MPEG-TS plugin" >&2
+      exit 1
+    }
+
+    gst-inspect-1.0 udpsink >/dev/null 2>&1 || {
+      echo "udpsink not found; install GStreamer UDP plugin" >&2
+      exit 1
+    }
+
+    command -v curl >/dev/null || command -v ffprobe >/dev/null || {
+      echo "curl or ffprobe not found; install curl or ffmpeg for MPEG-TS runtime health checks" >&2
+      exit 1
+    }
+  fi
+
+  if [[ "$MODE" == "rtp" ]]; then
+    gst-inspect-1.0 rtph264pay >/dev/null 2>&1 || {
+      echo "rtph264pay not found; install GStreamer RTP payloader plugin" >&2
+      exit 1
+    }
+
+    gst-inspect-1.0 udpsink >/dev/null 2>&1 || {
+      echo "udpsink not found; install GStreamer UDP plugin" >&2
+      exit 1
+    }
+
+    command -v ffprobe >/dev/null || {
+      echo "ffprobe not found; install ffmpeg for runtime stream health checks" >&2
+      exit 1
+    }
+  fi
+
+  resolve_device
+}
+
+actual_device() {
+  local device=${RESOLVED_DEVICE:-$DEVICE}
+  readlink -f "$device" 2>/dev/null || echo "$device"
+}
+
+device_in_use() {
+  local device=$1
+
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$device" >/dev/null 2>&1
+    return $?
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    lsof "$device" >/dev/null 2>&1
+    return $?
+  fi
+
+  return 1
+}
+
+log_device_holders() {
+  local device=$1
+  local output=
+
+  if command -v fuser >/dev/null 2>&1; then
+    output=$(fuser -v "$device" 2>/dev/null || true)
+    if [[ -n "$output" ]]; then
+      {
+        echo "[$(date -Is)] device holders for $device (fuser):"
+        echo "$output"
+      } >> "$LOG_FILE"
+      return 0
+    fi
+  fi
+
+  if command -v lsof >/dev/null 2>&1; then
+    output=$(lsof "$device" 2>/dev/null || true)
+    if [[ -n "$output" ]]; then
+      {
+        echo "[$(date -Is)] device holders for $device (lsof):"
+        echo "$output"
+      } >> "$LOG_FILE"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+device_capture_test_ok() {
+  local device=$1
+
+  timeout 6s gst-launch-1.0 -q \
+    v4l2src "device=$device" num-buffers=1 \
+    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1" \
+    ! fakesink sync=false >/dev/null 2>&1
+}
+
+device_encode_test_ok() {
+  local device=$1
+
+  timeout 8s gst-launch-1.0 -q \
+    v4l2src "device=$device" num-buffers=45 \
+    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1" \
+    ! mpph264enc "bps=$BITRATE" "gop=$GOP" "profile=$H264_PROFILE" "header-mode=$H264_HEADER_MODE" \
+    ! h264parse config-interval=1 \
+    ! fakesink sync=false >/dev/null 2>&1
+}
+
+device_try_fmt_ok() {
+  local device=$1
+  local output
+
+  output=$(v4l2-ctl -d "$device" --try-fmt-video=width="$WIDTH",height="$HEIGHT",pixelformat=NV12 2>/dev/null || true)
+  [[ -n "$output" ]] || return 1
+
+  grep -q "Width/Height[[:space:]]*:[[:space:]]*$WIDTH/$HEIGHT" <<<"$output" || return 1
+  grep -q "Pixel Format[[:space:]]*:[[:space:]]*'NV12'" <<<"$output" || return 1
+}
+
+device_stream_test_ok() {
+  local device=$1
+
+  device_capture_test_ok "$device" || return 1
+  device_encode_test_ok "$device"
+}
+
+device_is_rkisp_mainpath() {
+  local device=$1
+  local output
+
+  output=$(v4l2-ctl -d "$device" --all 2>/dev/null || true)
+  [[ -n "$output" ]] || return 1
+  grep -q "Card type[[:space:]]*:[[:space:]]*rkisp_mainpath" <<<"$output" || return 1
+}
+
+find_best_device() {
+  local device
+  local preferred_devices=(
+    /dev/openrd-cam-front
+    /dev/openrd-cam-rear
+    /dev/v4l/by-path/platform-rkisp0-vir0-video-index0
+    /dev/v4l/by-path/platform-rkisp1-vir0-video-index0
+  )
+
+  for device in "${preferred_devices[@]}"; do
+    if [[ -e "$device" ]] && device_try_fmt_ok "$device"; then
+      echo "$device"
+      return 0
+    fi
+  done
+
+  for device in /dev/video*; do
+    [[ -e "$device" ]] || continue
+    device_is_rkisp_mainpath "$device" || continue
+    device_try_fmt_ok "$device" || continue
+    echo "$device"
+    return 0
+  done
+
+  return 1
+}
+
+resolve_device() {
+  local requested=$DEVICE
+
+  if [[ "$requested" != "auto" ]]; then
+    if [[ ! -e "$requested" ]]; then
+      echo "video device not found: $requested" >&2
+      exit 1
+    fi
+
+    if ! device_try_fmt_ok "$requested"; then
+      echo "video device $requested does not support ${WIDTH}x${HEIGHT} NV12" >&2
+      exit 1
+    fi
+
+    RESOLVED_DEVICE=$requested
+    return 0
+  fi
+
+  if RESOLVED_DEVICE=$(find_best_device); then
+    return 0
+  fi
+
+  if [[ "$requested" == "auto" ]]; then
+    echo "no rkisp_mainpath device supports ${WIDTH}x${HEIGHT} NV12" >&2
+  fi
+  exit 1
+}
+
+build_pipeline() {
+  local pipeline_device=${RESOLVED_DEVICE:-$DEVICE}
+
+  PIPELINE=(
+    gst-launch-1.0 -e
+    v4l2src "device=$pipeline_device"
+  )
+
+  if [[ "$BUFFERS" != "0" ]]; then
+    PIPELINE+=("num-buffers=$BUFFERS")
+  fi
+
+  PIPELINE+=(
+    ! "video/x-raw,format=NV12,width=$WIDTH,height=$HEIGHT,framerate=$FPS/1"
+    ! mpph264enc "bps=$BITRATE" "gop=$GOP" "profile=$H264_PROFILE" "header-mode=$H264_HEADER_MODE"
+    ! queue
+    ! h264parse config-interval=1
+  )
+
+  case "$MODE" in
+    fakesink)
+      PIPELINE+=(! fakesink sync=false) ;;
+    file)
+      PIPELINE+=(! filesink "location=$OUTPUT") ;;
+    mpegts)
+      PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! mpegtsmux ! udpsink "host=$MPEGTS_HOST" "port=$MPEGTS_PORT" sync=false async=false) ;;
+    rtp)
+      PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! rtph264pay "pt=$RTP_PAYLOAD_TYPE" config-interval=1 "mtu=$RTP_MTU" ! udpsink "host=$RTP_HOST" "port=$RTP_PORT" sync=false async=false) ;;
+    rtsp)
+      PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! rtspclientsink "location=$RTSP_URL" "protocols=$RTSP_PROTOCOLS" "latency=$RTSP_LATENCY_MS") ;;
+  esac
+}
+
+print_pipeline() {
+  build_pipeline
+  printf '%q ' "${PIPELINE[@]}"
+  printf '\n'
+}
+
+is_running_pid() {
+  local pid=${1:-}
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+current_pid() {
+  if [[ -f "$PID_FILE" ]]; then
+    cat "$PID_FILE"
+  fi
+}
+
+state_value() {
+  local key=$1
+  local default_value=${2:-}
+  if [[ ! -f "$STATE_FILE" ]]; then
+    echo "$default_value"
+    return
+  fi
+
+  local line
+  line=$(grep -m1 -E "^${key}=" "$STATE_FILE" || true)
+  if [[ -z "$line" ]]; then
+    echo "$default_value"
+    return
+  fi
+
+  echo "${line#*=}"
+}
+
+load_state_defaults() {
+  [[ -f "$STATE_FILE" ]] || return 0
+
+MODE=$(state_value MODE "$MODE")
+DEVICE=$(state_value DEVICE "$DEVICE")
+  WIDTH=$(state_value WIDTH "$WIDTH")
+  HEIGHT=$(state_value HEIGHT "$HEIGHT")
+  FPS=$(state_value FPS "$FPS")
+  BITRATE=$(state_value BITRATE "$BITRATE")
+  GOP=$(state_value GOP "$GOP")
+  OUTPUT=$(state_value OUTPUT "$OUTPUT")
+  H264_PROFILE=$(state_value H264_PROFILE "$H264_PROFILE")
+  H264_HEADER_MODE=$(state_value H264_HEADER_MODE "$H264_HEADER_MODE")
+  RTSP_URL=$(state_value RTSP_URL "$RTSP_URL")
+  RTSP_PROTOCOLS=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
+  RTSP_LATENCY_MS=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
+  MPEGTS_HOST=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
+  MPEGTS_PORT=$(state_value MPEGTS_PORT "$MPEGTS_PORT")
+  RTP_HOST=$(state_value RTP_HOST "$RTP_HOST")
+  RTP_PORT=$(state_value RTP_PORT "$RTP_PORT")
+  RTP_PAYLOAD_TYPE=$(state_value RTP_PAYLOAD_TYPE "$RTP_PAYLOAD_TYPE")
+  RTP_MTU=$(state_value RTP_MTU "$RTP_MTU")
+  LOG_FILE=$(state_value LOG_FILE "$LOG_FILE")
+}
+
+json_escape() {
+  local value=${1:-}
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/}
+  echo "$value"
+}
+
+write_state() {
+  local state=$1
+  local pid=${2:-0}
+  local message=${3:-}
+  mkdir -p "$STATE_DIR"
+  cat > "$STATE_FILE" <<EOF
+STATE=$state
+PID=$pid
+MODE=$MODE
+DEVICE=$DEVICE
+ACTUAL_DEVICE=$(actual_device)
+WIDTH=$WIDTH
+HEIGHT=$HEIGHT
+FPS=$FPS
+BITRATE=$BITRATE
+GOP=$GOP
+OUTPUT=$OUTPUT
+H264_PROFILE=$H264_PROFILE
+H264_HEADER_MODE=$H264_HEADER_MODE
+RTSP_URL=$RTSP_URL
+RTSP_PROTOCOLS=$RTSP_PROTOCOLS
+RTSP_LATENCY_MS=$RTSP_LATENCY_MS
+MPEGTS_HOST=$MPEGTS_HOST
+MPEGTS_PORT=$MPEGTS_PORT
+RTP_HOST=$RTP_HOST
+RTP_PORT=$RTP_PORT
+RTP_PAYLOAD_TYPE=$RTP_PAYLOAD_TYPE
+RTP_MTU=$RTP_MTU
+LOG_FILE=$LOG_FILE
+STARTED_AT=$(date -Is)
+MESSAGE=$message
+EOF
+}
+
+status_text() {
+  local pid
+  pid=$(current_pid || true)
+  local running=false
+  local recorded_state
+  recorded_state=$(state_value STATE stopped)
+  if is_running_pid "$pid"; then
+    running=true
+  fi
+
+  if [[ "$running" == true ]]; then
+    echo "state: running"
+    echo "pid: ${pid:-0}"
+  else
+    if [[ "$recorded_state" == "running" ]]; then
+      recorded_state=stopped
+    fi
+    echo "state: $recorded_state"
+    echo "pid: 0"
+  fi
+
+  if [[ -f "$STATE_FILE" ]]; then
+    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
+  else
+    echo "  state_file: missing"
+  fi
+}
+
+status_json() {
+  local pid
+  pid=$(current_pid || true)
+  local state
+  state=$(state_value STATE stopped)
+  local runtime_running=false
+  if is_running_pid "$pid"; then
+    state=running
+    runtime_running=true
+  else
+    pid=0
+    if [[ "$state" == "running" ]]; then
+      state=stopped
+    fi
+  fi
+
+  local mode device actual_device width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
+  mode=$(state_value MODE "$MODE")
+  device=$(state_value DEVICE "$DEVICE")
+  actual_device=$(state_value ACTUAL_DEVICE "$(actual_device)")
+  width=$(state_value WIDTH "$WIDTH")
+  height=$(state_value HEIGHT "$HEIGHT")
+  fps=$(state_value FPS "$FPS")
+  bitrate=$(state_value BITRATE "$BITRATE")
+  gop=$(state_value GOP "$GOP")
+  output=$(state_value OUTPUT "$OUTPUT")
+  h264_profile=$(state_value H264_PROFILE "$H264_PROFILE")
+  h264_header_mode=$(state_value H264_HEADER_MODE "$H264_HEADER_MODE")
+  rtsp_url=$(state_value RTSP_URL "$RTSP_URL")
+  rtsp_protocols=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
+  rtsp_latency_ms=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
+  mpegts_host=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
+  mpegts_port=$(state_value MPEGTS_PORT "$MPEGTS_PORT")
+  rtp_host=$(state_value RTP_HOST "$RTP_HOST")
+  rtp_port=$(state_value RTP_PORT "$RTP_PORT")
+  rtp_payload_type=$(state_value RTP_PAYLOAD_TYPE "$RTP_PAYLOAD_TYPE")
+  rtp_mtu=$(state_value RTP_MTU "$RTP_MTU")
+  log_file=$(state_value LOG_FILE "$LOG_FILE")
+  message=$(state_value MESSAGE "")
+  if [[ "$runtime_running" == false && ("$message" == "foreground" || "$message" == "started") ]]; then
+    message="process not running"
+  fi
+
+  cat <<EOF
+{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
+EOF
+}
+
+start_runtime() {
+  check_dependencies
+  mkdir -p "$STATE_DIR"
+
+  local pid
+  pid=$(current_pid || true)
+  if is_running_pid "$pid"; then
+    echo "OpenRD native video is already running: pid=$pid"
+    status_text
+    return 0
+  fi
+
+  build_pipeline
+  echo "[$(date -Is)] starting OpenRD native video runtime" >> "$LOG_FILE"
+  echo "device=$DEVICE actual_device=$(actual_device) mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+  printf 'pipeline=' >> "$LOG_FILE"
+  printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
+  printf '\n' >> "$LOG_FILE"
+
+  setsid "${PIPELINE[@]}" >> "$LOG_FILE" 2>&1 < /dev/null &
+  pid=$!
+  echo "$pid" > "$PID_FILE"
+  write_state running "$pid" "started"
+  echo "OpenRD native video started: pid=$pid"
+}
+
+stream_health_ok() {
+  case "$MODE" in
+    rtsp)
+      rtsp_stream_health_ok
+      ;;
+    mpegts)
+      local hls_url
+      local hls_manifest
+      hls_url=$(rtsp_hls_healthcheck_url)
+
+      if command -v curl >/dev/null; then
+        hls_manifest=$(timeout 8s curl -fsSL --max-time 6 "$hls_url" 2>/dev/null || true)
+        if [[ "$hls_manifest" == \#EXTM3U* ]]; then
+          return 0
+        fi
+      fi
+
+      if command -v ffprobe >/dev/null && timeout "${RTSP_HEALTHCHECK_TIMEOUT_SEC}s" ffprobe -v error -rtsp_transport tcp -analyzeduration 1000000 -probesize 1000000 -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$RTSP_URL" 2>/dev/null | grep -q .; then
+        return 0
+      fi
+
+      return 1
+      ;;
+    rtp)
+      return 0
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+}
+
+rtsp_stream_health_ok() {
+  if command -v ffmpeg >/dev/null; then
+    if timeout "${RTSP_HEALTHCHECK_TIMEOUT_SEC}s" \
+      ffmpeg -nostdin -hide_banner -loglevel error -rtsp_transport tcp \
+      -i "$RTSP_URL" -map 0:v:0 -frames:v 1 -f null - >/dev/null 2>&1; then
+      return 0
+    fi
+    return 1
+  fi
+
+  if command -v ffprobe >/dev/null; then
+    if timeout "${RTSP_HEALTHCHECK_TIMEOUT_SEC}s" \
+      ffprobe -v error -rtsp_transport tcp -analyzeduration 1000000 -probesize 1000000 \
+      -select_streams v:0 -show_entries stream=codec_name,width,height \
+      -of csv=s=x:p=0 "$RTSP_URL" 2>/dev/null |
+      awk -F'x' '$1 != "" && ($2 + 0) > 0 && ($3 + 0) > 0 { found=1 } END { exit found ? 0 : 1 }'; then
+      return 0
+    fi
+    return 1
+  fi
+
+  return 1
+}
+
+restart_camera_engine() {
+  if (( RKAIQ_RESTART_AFTER_HEALTH_RESTARTS == 0 )); then
+    return 0
+  fi
+
+  echo "[$(date -Is)] restarting camera engine: $RKAIQ_SERVICE" >> "$LOG_FILE"
+
+  if [[ ${EUID:-$(id -u)} -eq 0 ]]; then
+    if systemctl restart "$RKAIQ_SERVICE" >> "$LOG_FILE" 2>&1; then
+      sleep "$RKAIQ_RESTART_DELAY_SEC"
+      return 0
+    fi
+  elif command -v sudo >/dev/null; then
+    if sudo -n systemctl restart "$RKAIQ_SERVICE" >> "$LOG_FILE" 2>&1; then
+      sleep "$RKAIQ_RESTART_DELAY_SEC"
+      return 0
+    fi
+  fi
+
+  echo "[$(date -Is)] failed to restart camera engine: $RKAIQ_SERVICE" >> "$LOG_FILE"
+  return 1
+}
+
+rtsp_path_name() {
+  local url_without_query=${RTSP_URL%%\?*}
+  local url_without_scheme=${url_without_query#*://}
+  local path=${url_without_scheme#*/}
+
+  if [[ -z "$path" || "$path" == "$url_without_scheme" ]]; then
+    echo live
+  else
+    echo "$path"
+  fi
+}
+
+rtsp_hls_healthcheck_url() {
+  if [[ -n "$HLS_HEALTHCHECK_URL" ]]; then
+    echo "$HLS_HEALTHCHECK_URL"
+    return 0
+  fi
+
+  echo "http://127.0.0.1:8888/$(rtsp_path_name)/index.m3u8"
+}
+
+supervise_runtime() {
+  check_dependencies
+  mkdir -p "$STATE_DIR"
+
+  local restart_count=0
+  local child_pid=0
+  local health_failures=0
+  local health_restart_count=0
+  local total_health_restarts=0
+  local rkaiq_restart_count=0
+  local started_at=0
+  local restart_delay=$RESTART_DELAY_SEC
+  local exit_started_at=0
+  local restart_due_to_health=0
+
+  stop_child() {
+    if is_running_pid "$child_pid"; then
+      kill -INT -- "-$child_pid" 2>/dev/null || kill -INT "$child_pid" 2>/dev/null || true
+      for _ in $(seq 1 50); do
+        if ! is_running_pid "$child_pid"; then
+          break
+        fi
+        sleep 0.1
+      done
+      if is_running_pid "$child_pid"; then
+        kill -KILL -- "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+      fi
+    fi
+  }
+
+  trap 'stop_child; write_state stopped 0 "supervisor stopped"; rm -f "$PID_FILE"; exit 0' INT TERM
+
+  while true; do
+    build_pipeline
+    echo "[$(date -Is)] starting OpenRD native video runtime (supervised)" >> "$LOG_FILE"
+    echo "device=$DEVICE actual_device=$(actual_device) mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+    printf 'pipeline=' >> "$LOG_FILE"
+    printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
+    printf '\n' >> "$LOG_FILE"
+
+    setsid "${PIPELINE[@]}" >> "$LOG_FILE" 2>&1 < /dev/null &
+    child_pid=$!
+    echo "$$" > "$PID_FILE"
+    write_state running "$$" "supervised"
+
+    started_at=$(date +%s)
+    health_failures=0
+    restart_due_to_health=0
+
+    while is_running_pid "$child_pid"; do
+      if (( $(date +%s) - started_at < HEALTHCHECK_STARTUP_GRACE_SEC )); then
+        sleep "$HEALTHCHECK_INTERVAL_SEC"
+        continue
+      fi
+
+      if (( HEALTHCHECK_FAILURES == 0 )); then
+        sleep "$HEALTHCHECK_INTERVAL_SEC"
+        continue
+      fi
+
+      if stream_health_ok; then
+        health_failures=0
+      else
+        health_failures=$((health_failures + 1))
+        echo "[$(date -Is)] health check failed ($health_failures/$HEALTHCHECK_FAILURES)" >> "$LOG_FILE"
+      fi
+
+      if (( health_failures >= HEALTHCHECK_FAILURES )); then
+        echo "[$(date -Is)] restarting video runtime after health check failures" >> "$LOG_FILE"
+        restart_due_to_health=1
+        break
+      fi
+
+      sleep "$HEALTHCHECK_INTERVAL_SEC"
+    done
+
+    stop_child
+
+    exit_started_at=$(( $(date +%s) - started_at ))
+    if (( restart_due_to_health )); then
+      health_restart_count=$((health_restart_count + 1))
+      total_health_restarts=$((total_health_restarts + 1))
+    else
+      health_restart_count=0
+    fi
+
+    if (( restart_due_to_health && total_health_restarts > MAX_HEALTH_RESTARTS )); then
+      local fault_message
+      fault_message="health check failed after ${MAX_HEALTH_RESTARTS} recovery attempt(s); manual intervention required"
+      echo "[$(date -Is)] faulted: $fault_message" >> "$LOG_FILE"
+      rm -f "$PID_FILE"
+      write_state faulted 0 "$fault_message"
+      exit "$FAULT_EXIT_CODE"
+    fi
+
+    if ! is_running_pid "$child_pid"; then
+      echo "[$(date -Is)] video pipeline exited; restarting" >> "$LOG_FILE"
+    fi
+
+    if (( RKAIQ_RESTART_AFTER_HEALTH_RESTARTS > 0 && health_restart_count >= RKAIQ_RESTART_AFTER_HEALTH_RESTARTS )); then
+      if (( rkaiq_restart_count < MAX_RKAIQ_RESTARTS )); then
+        restart_camera_engine || true
+        rkaiq_restart_count=$((rkaiq_restart_count + 1))
+      else
+        echo "[$(date -Is)] camera engine restart limit reached (${MAX_RKAIQ_RESTARTS}); not restarting $RKAIQ_SERVICE" >> "$LOG_FILE"
+      fi
+      health_restart_count=0
+    fi
+
+    if (( exit_started_at < RAPID_RESTART_WINDOW_SEC )); then
+      log_device_holders "$(actual_device)" || true
+      restart_delay=$((restart_delay * 2))
+      if (( restart_delay > RESTART_BACKOFF_MAX_SEC )); then
+        restart_delay=$RESTART_BACKOFF_MAX_SEC
+      fi
+      echo "[$(date -Is)] video pipeline exited after ${exit_started_at}s; applying restart backoff ${restart_delay}s" >> "$LOG_FILE"
+    else
+      restart_delay=$RESTART_DELAY_SEC
+    fi
+
+    restart_count=$((restart_count + 1))
+    echo "$$" > "$PID_FILE"
+    write_state running "$$" "restart #$restart_count"
+    sleep "$restart_delay"
+  done
+}
+
+stop_runtime() {
+  load_state_defaults
+
+  local pid
+  pid=$(current_pid || true)
+  if ! is_running_pid "$pid"; then
+    rm -f "$PID_FILE"
+    write_state stopped 0 "not running"
+    echo "OpenRD native video is not running"
+    return 0
+  fi
+
+  echo "stopping OpenRD native video: pid=$pid"
+  kill -INT -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+
+  for _ in $(seq 1 50); do
+    if ! is_running_pid "$pid"; then
+      rm -f "$PID_FILE"
+      write_state stopped 0 "stopped"
+      echo "OpenRD native video stopped"
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  echo "process did not exit gracefully; sending SIGKILL" >&2
+  kill -KILL -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  write_state stopped 0 "killed"
+}
+
+run_foreground() {
+  check_dependencies
+  mkdir -p "$STATE_DIR"
+  build_pipeline
+  echo "OpenRD native video foreground pipeline:"
+  print_pipeline
+  write_state running "$$" "foreground"
+  echo "$$" > "$PID_FILE"
+  exec "${PIPELINE[@]}"
+}
+
+main() {
+  case "$COMMAND" in
+    help|-h|--help)
+      usage ;;
+    test)
+      BUFFERS=60
+      parse_args "$@"
+      validate_args
+      run_foreground ;;
+    run)
+      parse_args "$@"
+      validate_args
+      run_foreground ;;
+    start)
+      parse_args "$@"
+      validate_args
+      start_runtime ;;
+    stop)
+      parse_args "$@"
+      stop_runtime ;;
+    restart)
+      parse_args "$@"
+      validate_args
+      stop_runtime
+      start_runtime ;;
+    supervise)
+      parse_args "$@"
+      validate_args
+      supervise_runtime ;;
+    status)
+      local output_json=false
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) output_json=true; shift ;;
+          -h|--help) usage; exit 0 ;;
+          *) echo "unknown option for status: $1" >&2; exit 2 ;;
+        esac
+      done
+      mkdir -p "$STATE_DIR"
+      if [[ "$output_json" == true ]]; then
+        status_json
+      else
+        status_text
+      fi ;;
+    pipeline)
+      parse_args "$@"
+      validate_args
+      print_pipeline ;;
+    *)
+      echo "unknown command: $COMMAND" >&2
+      usage >&2
+      exit 2 ;;
+  esac
+}
+
+main "$@"

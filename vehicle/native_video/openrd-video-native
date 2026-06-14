@@ -26,7 +26,7 @@ shift || true
 MODE=fakesink
 DEVICE=auto
 INPUT_FORMAT=${OPENRD_VIDEO_INPUT_FORMAT:-mjpg}
-MJPEG_DECODER=${OPENRD_VIDEO_MJPEG_DECODER:-software}
+MJPEG_DECODER=${OPENRD_VIDEO_MJPEG_DECODER:-mpp}
 WIDTH=1280
 HEIGHT=720
 FPS=30
@@ -76,7 +76,7 @@ OpenRD Native Video Runtime v0.1
   --device PATH|auto       V4L2 设备；`auto` 会优先选择 UVC 摄像头，仍保留 CSI 节点作为可选回退。
   --input-format nv12|mjpg 摄像头输入格式，默认 mjpg。
   --mjpeg-decoder software|mpp
-                           MJPG 输入解码器；software 使用 jpegdec，mpp 使用 Rockchip mppjpegdec 硬解。
+                           MJPG 输入解码器，默认 mpp；mpp 使用 Rockchip mppjpegdec 硬解，software 使用 jpegdec。
   --width N                宽度，默认 1280。
   --height N               高度，默认 720。
   --fps N                  帧率，默认 30。

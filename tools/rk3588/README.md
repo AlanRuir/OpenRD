@@ -30,8 +30,8 @@
 ```text
 /dev/openrd-cam-uvc
   -> v4l2src MJPG
-  -> jpegdec
-  -> videoconvert NV12
+  -> jpegparse
+  -> mppjpegdec format=NV12
   -> mpph264enc
   -> h264parse
   -> rtspclientsink rtsp://127.0.0.1:8554/live
@@ -39,19 +39,19 @@
   -> RTSP/WebRTC
 ```
 
-可选硬解链路已在当前 RK3588 板端验证：
+软件解码回退链路：
 
 ```text
 /dev/openrd-cam-uvc
   -> v4l2src MJPG
-  -> jpegparse
-  -> mppjpegdec format=NV12
+  -> jpegdec
+  -> videoconvert NV12
   -> mpph264enc
   -> h264parse
   -> rtspclientsink rtsp://127.0.0.1:8554/live
 ```
 
-切换方式：设置 `OPENRD_VIDEO_MJPEG_DECODER=mpp`，或手动运行 `openrd-video-native test --mjpeg-decoder mpp` / `openrd-video-native start --mjpeg-decoder mpp`。
+回退方式：设置 `OPENRD_VIDEO_MJPEG_DECODER=software`，或手动运行 `openrd-video-native test --mjpeg-decoder software` / `openrd-video-native start --mjpeg-decoder software`。
 
 默认板端地址：
 

@@ -69,8 +69,8 @@ MVP 成功标准：
 
 ### 视频链路
 
-- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入默认经 `jpegdec`/`videoconvert` 转为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTSP publisher 推送到本机 MediaMTX 的 `live` 路径；
-- RK3588 原生系统已验证可选 `mppjpegdec` MJPG 硬解，可通过 `OPENRD_VIDEO_MJPEG_DECODER=mpp` 或 `--mjpeg-decoder mpp` 切换；
+- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTSP publisher 推送到本机 MediaMTX 的 `live` 路径；
+- 保留软件解码回退路径，可通过 `OPENRD_VIDEO_MJPEG_DECODER=software` 或 `--mjpeg-decoder software` 切换到 `jpegdec`/`videoconvert`；
 - 局域网 RTSP 调试地址：`rtsp://192.168.100.108:8554/live`；
 - 浏览器 WebRTC 播放地址：`http://192.168.100.108:8889/live/`；
 - `openrd-video-native.service` 与 `mediamtx.service` 均启用 systemd 开机自启动；

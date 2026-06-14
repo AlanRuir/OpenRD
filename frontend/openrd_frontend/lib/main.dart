@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'control_link.dart';
 import 'gamepad_input.dart';
 import 'video_stream.dart';
 
@@ -45,8 +46,8 @@ class ControlDashboardPage extends StatefulWidget {
 
 class _ControlDashboardPageState extends State<ControlDashboardPage> {
   DriveCommand _lastCommand = DriveCommand.stop;
-  String _connectionState = '未连接';
-  final String _targetEndpoint = 'ws://<rk-ip>:8080/control';
+  final TextEditingController _controlEndpointController =
+      TextEditingController(text: 'ws://127.0.0.1:8080/control');
   bool _manualMode = true;
   double _steering = 0.0;
   double _throttle = 0.0;
@@ -54,6 +55,16 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   int _streamReloadToken = 0;
   StreamPlaybackState _streamState = StreamPlaybackState.loading;
   String _streamStatusMessage = '正在加载视频流';
+
+  late final ControlLink _controlLink = ControlLink(
+    endpoint: _controlEndpointController.text.trim(),
+  );
+  StreamSubscription<ControlLinkSnapshot>? _controlLinkSubscription;
+  ControlLinkSnapshot _controlLinkSnapshot = ControlLinkSnapshot.initial(
+    'ws://127.0.0.1:8080/control',
+  );
+  Timer? _controlSendTimer;
+  int _controlSeq = 0;
 
   final GamepadInput _gamepadInput = GamepadInput();
   StreamSubscription<GamepadSnapshot>? _gamepadSubscription;
@@ -69,16 +80,27 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   @override
   void initState() {
     super.initState();
+    _controlLinkSubscription = _controlLink.snapshots.listen(
+      _handleControlLinkSnapshot,
+    );
     _gamepadSubscription = _gamepadInput.snapshots.listen(
       _handleGamepadSnapshot,
     );
     _gamepadInput.start();
+    _controlSendTimer = Timer.periodic(
+      const Duration(milliseconds: 50),
+      (_) => _flushControlIfNeeded(),
+    );
   }
 
   @override
   void dispose() {
+    _controlSendTimer?.cancel();
+    _controlLinkSubscription?.cancel();
+    _controlLink.dispose();
     _gamepadSubscription?.cancel();
     _gamepadInput.dispose();
+    _controlEndpointController.dispose();
     _streamHostController.dispose();
     _streamPathController.dispose();
     super.dispose();
@@ -132,6 +154,16 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
     });
   }
 
+  void _handleControlLinkSnapshot(ControlLinkSnapshot snapshot) {
+    final wasConnected = _controlLinkSnapshot.isConnected;
+    setState(() {
+      _controlLinkSnapshot = snapshot;
+    });
+    if (!wasConnected && snapshot.isConnected) {
+      _queueControlSend(immediate: true);
+    }
+  }
+
   void _sendCommand(DriveCommand command) {
     setState(() {
       _lastCommand = command;
@@ -154,6 +186,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
           break;
       }
     });
+    _queueControlSend(immediate: command == DriveCommand.stop);
     _pushEvent('发送指令：${_commandLabel(command)}');
   }
 
@@ -189,6 +222,10 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       }
     });
 
+    if (applyDrive) {
+      _queueControlSend(immediate: snapshot.stopPressed);
+    }
+
     if (!previous.connected && connected) {
       _pushEvent('手柄已连接：${snapshot.shortName}');
     } else if (previous.connected && !connected) {
@@ -210,18 +247,29 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       _throttle = (-normalizedY).clamp(-1.0, 1.0);
       _lastCommand = _commandFromMotion(_steering, _throttle);
     });
+    _queueControlSend();
   }
 
   void _stopAll() {
     _sendCommand(DriveCommand.stop);
   }
 
-  void _toggleConnection() {
-    final isConnected = _connectionState == '已连接';
-    setState(() {
-      _connectionState = isConnected ? '未连接' : '已连接';
-    });
-    _pushEvent(isConnected ? '断开控制端' : '连接控制端');
+  void _toggleControlLink() {
+    if (_controlLinkSnapshot.isConnected ||
+        _controlLinkSnapshot.state == ControlLinkState.connecting) {
+      _controlLink.disconnect();
+      _pushEvent('断开控制链路');
+      return;
+    }
+
+    final endpoint = _controlEndpointController.text.trim();
+    if (endpoint.isEmpty) {
+      _pushEvent('控制链路地址为空');
+      return;
+    }
+
+    _controlLink.connect(endpoint);
+    _pushEvent('连接控制链路：$endpoint');
   }
 
   void _markStreamLoading(String message) {
@@ -260,6 +308,36 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       _streamState = StreamPlaybackState.error;
       _streamStatusMessage = message;
     });
+  }
+
+  void _queueControlSend({bool immediate = false}) {
+    if (immediate) {
+      _flushControlIfNeeded(force: true);
+    }
+  }
+
+  void _flushControlIfNeeded({bool force = false}) {
+    final stop = _steering.abs() < 0.01 && _throttle.abs() < 0.01;
+    if (!_controlLinkSnapshot.isConnected) {
+      if (force) {
+        _pushEvent('控制链路未连接，指令未发送');
+      }
+      return;
+    }
+
+    _controlSeq += 1;
+    final message = DriveControlMessage(
+      seq: _controlSeq,
+      timestampMs: DateTime.now().millisecondsSinceEpoch,
+      steering: _steering,
+      throttle: _throttle,
+      stop: stop,
+      source: _gamepadSnapshot.connected ? 'gamepad' : 'ui',
+    );
+    final sent = _controlLink.send(message);
+    if (!sent && force) {
+      _pushEvent('控制链路未连接，指令未发送');
+    }
   }
 
   DriveCommand _commandFromMotion(double steering, double throttle) {
@@ -328,14 +406,17 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
             final wideLayout = constraints.maxWidth >= 1180;
             final streamUrl = _streamUrl;
             final statusBar = _DashboardStatusBar(
-              connectionState: _connectionState,
+              connectionState: _controlLinkSnapshot.stateLabel,
+              controlActive:
+                  _controlLinkSnapshot.isConnected ||
+                  _controlLinkSnapshot.state == ControlLinkState.connecting,
               streamState: _streamLabel(),
               streamColor: _streamColor(),
               gamepadState: _gamepadSnapshot.connected ? '已连接' : '未连接',
               gamepadConnected: _gamepadSnapshot.connected,
               manualMode: _manualMode,
               lastCommand: _commandLabel(_lastCommand),
-              onToggleConnection: _toggleConnection,
+              onToggleConnection: _toggleControlLink,
               onStop: _stopAll,
             );
             final videoPanel = _LiveVideoPanel(
@@ -351,7 +432,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               onError: _handleStreamError,
             );
             final drivePanel = _DriveControlPanel(
-              endpoint: _targetEndpoint,
+              endpoint: _controlLinkSnapshot.endpoint,
+              controlSnapshot: _controlLinkSnapshot,
               manualMode: _manualMode,
               steering: _steering,
               throttle: _throttle,
@@ -373,6 +455,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
             );
             final debugPanel = _DebugPanel(
               eventLog: _eventLog,
+              controlEndpointController: _controlEndpointController,
+              controlSnapshot: _controlLinkSnapshot,
               hostController: _streamHostController,
               pathController: _streamPathController,
               muted: _streamMuted,
@@ -439,6 +523,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 class _DashboardStatusBar extends StatelessWidget {
   const _DashboardStatusBar({
     required this.connectionState,
+    required this.controlActive,
     required this.streamState,
     required this.streamColor,
     required this.gamepadState,
@@ -450,6 +535,7 @@ class _DashboardStatusBar extends StatelessWidget {
   });
 
   final String connectionState;
+  final bool controlActive;
   final String streamState;
   final Color streamColor;
   final String gamepadState;
@@ -461,7 +547,6 @@ class _DashboardStatusBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final connected = connectionState == '已连接';
     final theme = Theme.of(context);
 
     return _SurfacePanel(
@@ -487,10 +572,12 @@ class _DashboardStatusBar extends StatelessWidget {
               runSpacing: 8,
               children: [
                 _StatusPill(
-                  icon: connected ? Icons.link : Icons.link_off,
+                  icon: controlActive ? Icons.link : Icons.link_off,
                   label: '车端',
                   value: connectionState,
-                  color: connected ? const Color(0xFF2E7D32) : Colors.orange,
+                  color: controlActive
+                      ? const Color(0xFF2E7D32)
+                      : Colors.orange,
                 ),
                 _StatusPill(
                   icon: Icons.videocam,
@@ -526,8 +613,8 @@ class _DashboardStatusBar extends StatelessWidget {
               children: [
                 FilledButton.tonalIcon(
                   onPressed: onToggleConnection,
-                  icon: Icon(connected ? Icons.link_off : Icons.link),
-                  label: Text(connected ? '断开' : '连接'),
+                  icon: Icon(controlActive ? Icons.link_off : Icons.link),
+                  label: Text(controlActive ? '断开' : '连接'),
                 ),
                 FilledButton.icon(
                   onPressed: onStop,
@@ -684,6 +771,7 @@ class _VideoFrame extends StatelessWidget {
 class _DriveControlPanel extends StatelessWidget {
   const _DriveControlPanel({
     required this.endpoint,
+    required this.controlSnapshot,
     required this.manualMode,
     required this.steering,
     required this.throttle,
@@ -700,6 +788,7 @@ class _DriveControlPanel extends StatelessWidget {
   });
 
   final String endpoint;
+  final ControlLinkSnapshot controlSnapshot;
   final bool manualMode;
   final double steering;
   final double throttle;
@@ -739,6 +828,8 @@ class _DriveControlPanel extends StatelessWidget {
               runSpacing: 8,
               children: [
                 _SmallInfo(label: '目标', value: endpoint),
+                _SmallInfo(label: '链路', value: controlSnapshot.stateLabel),
+                _SmallInfo(label: '已发', value: '${controlSnapshot.sentCount}'),
                 _SmallInfo(label: '最近', value: lastCommand),
               ],
             ),
@@ -1076,6 +1167,8 @@ class _JoystickPainter extends CustomPainter {
 class _DebugPanel extends StatelessWidget {
   const _DebugPanel({
     required this.eventLog,
+    required this.controlEndpointController,
+    required this.controlSnapshot,
     required this.hostController,
     required this.pathController,
     required this.muted,
@@ -1086,6 +1179,8 @@ class _DebugPanel extends StatelessWidget {
   });
 
   final List<String> eventLog;
+  final TextEditingController controlEndpointController;
+  final ControlLinkSnapshot controlSnapshot;
   final TextEditingController hostController;
   final TextEditingController pathController;
   final bool muted;
@@ -1109,6 +1204,69 @@ class _DebugPanel extends StatelessWidget {
           overflow: TextOverflow.ellipsis,
         ),
         children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('控制链路', style: theme.textTheme.titleSmall),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SizedBox(
+                width: 280,
+                child: TextField(
+                  controller: controlEndpointController,
+                  decoration: const InputDecoration(labelText: 'WebSocket'),
+                ),
+              ),
+              _SmallInfo(label: '状态', value: controlSnapshot.stateLabel),
+              _SmallInfo(label: '发送', value: '${controlSnapshot.sentCount}'),
+              _SmallInfo(
+                label: '接收',
+                value: '${controlSnapshot.receivedCount}',
+              ),
+            ],
+          ),
+          if (controlSnapshot.lastError.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                controlSnapshot.lastError,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: const Color(0xFFC62828),
+                ),
+              ),
+            ),
+          ],
+          if (controlSnapshot.lastSent != null) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'last tx: ${controlSnapshot.lastSent!.toJson()}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
+          if (controlSnapshot.lastReceived.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'last rx: ${controlSnapshot.lastReceived}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('视频配置', style: theme.textTheme.titleSmall),
+          ),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 10,
             runSpacing: 10,

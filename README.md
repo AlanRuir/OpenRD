@@ -63,6 +63,7 @@ MVP 成功标准：
 - 支持平台：Web、Android、iOS；
 - 初期控制输入：浏览器 + 手柄、手机触屏；
 - 初期控制链路：WebSocket；
+- 当前 mock 验证：`dart run tools/mock_control_ws_server.dart`，前端默认连接 `ws://127.0.0.1:8080/control`；
 - 后续升级方向：WebRTC DataChannel；
 - 说明：Flutter 不直接接入 ROS2 DDS，而是通过 WebSocket/DataChannel bridge 与车端 ROS2 graph 通信。
 

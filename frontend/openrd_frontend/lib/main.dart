@@ -117,6 +117,28 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
     ).toString();
   }
 
+  String get _streamReaderUrl {
+    final host = _normalizedHost();
+    final pathSegments = _pathSegments();
+    return Uri(
+      scheme: 'http',
+      host: host,
+      port: 8889,
+      pathSegments: <String>[...pathSegments, 'reader.js'],
+    ).toString();
+  }
+
+  String get _streamWhepUrl {
+    final host = _normalizedHost();
+    final pathSegments = _pathSegments();
+    return Uri(
+      scheme: 'http',
+      host: host,
+      port: 8889,
+      pathSegments: <String>[...pathSegments, 'whep'],
+    ).toString();
+  }
+
   String _normalizedHost() {
     final host = _streamHostController.text.trim();
     if (host.isEmpty) {
@@ -295,7 +317,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 
     setState(() {
       _streamState = StreamPlaybackState.ready;
-      _streamStatusMessage = '播放器页面已打开';
+      _streamStatusMessage = '';
     });
   }
 
@@ -405,6 +427,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
           builder: (context, constraints) {
             final wideLayout = constraints.maxWidth >= 1180;
             final streamUrl = _streamUrl;
+            final streamReaderUrl = _streamReaderUrl;
+            final streamWhepUrl = _streamWhepUrl;
             final statusBar = _DashboardStatusBar(
               connectionState: _controlLinkSnapshot.stateLabel,
               controlActive:
@@ -421,7 +445,12 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
             );
             final videoPanel = _LiveVideoPanel(
               streamUrl: streamUrl,
-              streamViewKey: ValueKey('$streamUrl#$_streamReloadToken'),
+              streamReaderUrl: streamReaderUrl,
+              streamWhepUrl: streamWhepUrl,
+              muted: _streamMuted,
+              streamViewKey: ValueKey(
+                '$streamUrl#$_streamMuted#$_streamReloadToken',
+              ),
               streamState: _streamLabel(),
               streamStatusMessage: _streamStatusMessage,
               streamColor: _streamColor(),
@@ -660,6 +689,9 @@ class _DashboardStatusBar extends StatelessWidget {
 class _LiveVideoPanel extends StatelessWidget {
   const _LiveVideoPanel({
     required this.streamUrl,
+    required this.streamReaderUrl,
+    required this.streamWhepUrl,
+    required this.muted,
     required this.streamViewKey,
     required this.streamState,
     required this.streamStatusMessage,
@@ -672,6 +704,9 @@ class _LiveVideoPanel extends StatelessWidget {
   });
 
   final String streamUrl;
+  final String streamReaderUrl;
+  final String streamWhepUrl;
+  final bool muted;
   final Key streamViewKey;
   final String streamState;
   final String streamStatusMessage;
@@ -687,6 +722,9 @@ class _LiveVideoPanel extends StatelessWidget {
     final theme = Theme.of(context);
     final frame = _VideoFrame(
       streamUrl: streamUrl,
+      streamReaderUrl: streamReaderUrl,
+      streamWhepUrl: streamWhepUrl,
+      muted: muted,
       streamViewKey: streamViewKey,
       onReady: onReady,
       onError: onError,
@@ -717,18 +755,24 @@ class _LiveVideoPanel extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              streamStatusMessage,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+            if (streamStatusMessage.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                streamStatusMessage,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
               ),
-            ),
+            ],
             const SizedBox(height: 10),
             fillAvailable
-                ? Expanded(child: frame)
+                ? Expanded(
+                    child: Center(
+                      child: AspectRatio(aspectRatio: 16 / 9, child: frame),
+                    ),
+                  )
                 : AspectRatio(aspectRatio: 16 / 9, child: frame),
           ],
         ),
@@ -740,12 +784,18 @@ class _LiveVideoPanel extends StatelessWidget {
 class _VideoFrame extends StatelessWidget {
   const _VideoFrame({
     required this.streamUrl,
+    required this.streamReaderUrl,
+    required this.streamWhepUrl,
+    required this.muted,
     required this.streamViewKey,
     required this.onReady,
     required this.onError,
   });
 
   final String streamUrl;
+  final String streamReaderUrl;
+  final String streamWhepUrl;
+  final bool muted;
   final Key streamViewKey;
   final VoidCallback onReady;
   final ValueChanged<String> onError;
@@ -759,6 +809,9 @@ class _VideoFrame extends StatelessWidget {
         child: OpenRdStreamView(
           key: streamViewKey,
           url: streamUrl,
+          readerUrl: streamReaderUrl,
+          whepUrl: streamWhepUrl,
+          muted: muted,
           onReady: onReady,
           onError: onError,
           placeholder: _StreamFallback(url: streamUrl),
@@ -829,7 +882,6 @@ class _DriveControlPanel extends StatelessWidget {
               children: [
                 _SmallInfo(label: '目标', value: endpoint),
                 _SmallInfo(label: '链路', value: controlSnapshot.stateLabel),
-                _SmallInfo(label: '已发', value: '${controlSnapshot.sentCount}'),
                 _SmallInfo(label: '最近', value: lastCommand),
               ],
             ),
@@ -969,6 +1021,19 @@ class _BackupControls extends StatelessWidget {
       );
     }
 
+    Widget holdButton({
+      required IconData icon,
+      required String label,
+      required VoidCallback onHoldStart,
+    }) {
+      return _HoldDriveButton(
+        icon: icon,
+        label: label,
+        onHoldStart: onHoldStart,
+        onHoldEnd: onStop,
+      );
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -978,10 +1043,10 @@ class _BackupControls extends StatelessWidget {
           children: [
             const Expanded(child: SizedBox()),
             Expanded(
-              child: button(
+              child: holdButton(
                 icon: Icons.keyboard_arrow_up,
                 label: '前进',
-                onPressed: onForward,
+                onHoldStart: onForward,
               ),
             ),
             const Expanded(child: SizedBox()),
@@ -991,10 +1056,10 @@ class _BackupControls extends StatelessWidget {
         Row(
           children: [
             Expanded(
-              child: button(
+              child: holdButton(
                 icon: Icons.keyboard_arrow_left,
                 label: '左转',
-                onPressed: onLeft,
+                onHoldStart: onLeft,
               ),
             ),
             const SizedBox(width: 8),
@@ -1008,10 +1073,10 @@ class _BackupControls extends StatelessWidget {
             ),
             const SizedBox(width: 8),
             Expanded(
-              child: button(
+              child: holdButton(
                 icon: Icons.keyboard_arrow_right,
                 label: '右转',
-                onPressed: onRight,
+                onHoldStart: onRight,
               ),
             ),
           ],
@@ -1021,16 +1086,88 @@ class _BackupControls extends StatelessWidget {
           children: [
             const Expanded(child: SizedBox()),
             Expanded(
-              child: button(
+              child: holdButton(
                 icon: Icons.keyboard_arrow_down,
                 label: '后退',
-                onPressed: onBackward,
+                onHoldStart: onBackward,
               ),
             ),
             const Expanded(child: SizedBox()),
           ],
         ),
       ],
+    );
+  }
+}
+
+class _HoldDriveButton extends StatefulWidget {
+  const _HoldDriveButton({
+    required this.icon,
+    required this.label,
+    required this.onHoldStart,
+    required this.onHoldEnd,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onHoldStart;
+  final VoidCallback onHoldEnd;
+
+  @override
+  State<_HoldDriveButton> createState() => _HoldDriveButtonState();
+}
+
+class _HoldDriveButtonState extends State<_HoldDriveButton> {
+  bool _holding = false;
+
+  void _startHold() {
+    if (_holding) {
+      return;
+    }
+    setState(() {
+      _holding = true;
+    });
+    widget.onHoldStart();
+  }
+
+  void _endHold() {
+    if (!_holding) {
+      return;
+    }
+    setState(() {
+      _holding = false;
+    });
+    widget.onHoldEnd();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (_) => _startHold(),
+      onPointerUp: (_) => _endHold(),
+      onPointerCancel: (_) => _endHold(),
+      onPointerPanZoomStart: (_) => _startHold(),
+      onPointerPanZoomEnd: (_) => _endHold(),
+      child: MouseRegion(
+        onExit: (_) => _endHold(),
+        cursor: SystemMouseCursors.click,
+        child: SizedBox(
+          height: 46,
+          child: FilledButton.tonalIcon(
+            onPressed: () {},
+            icon: Icon(widget.icon),
+            label: Text(widget.label),
+            style: FilledButton.styleFrom(
+              backgroundColor: _holding
+                  ? Theme.of(context).colorScheme.primaryContainer
+                  : null,
+              foregroundColor: _holding
+                  ? Theme.of(context).colorScheme.onPrimaryContainer
+                  : null,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

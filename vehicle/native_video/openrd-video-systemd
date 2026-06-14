@@ -19,6 +19,7 @@ shift || true
 MODE=rtsp
 DEVICE=/dev/openrd-cam-uvc
 INPUT_FORMAT=${OPENRD_VIDEO_INPUT_FORMAT:-mjpg}
+MJPEG_DECODER=${OPENRD_VIDEO_MJPEG_DECODER:-software}
 WIDTH=1280
 HEIGHT=720
 FPS=30
@@ -68,6 +69,8 @@ parse_args() {
         DEVICE=${2:?missing value for --device}; shift 2 ;;
       --input-format)
         INPUT_FORMAT=${2:?missing value for --input-format}; shift 2 ;;
+      --mjpeg-decoder)
+        MJPEG_DECODER=${2:?missing value for --mjpeg-decoder}; shift 2 ;;
       --width)
         WIDTH=${2:?missing value for --width}; shift 2 ;;
       --height)
@@ -133,6 +136,7 @@ write_service_env() {
 OPENRD_VIDEO_MODE=$MODE
 OPENRD_VIDEO_DEVICE=$DEVICE
 OPENRD_VIDEO_INPUT_FORMAT=$INPUT_FORMAT
+OPENRD_VIDEO_MJPEG_DECODER=$MJPEG_DECODER
 OPENRD_VIDEO_WIDTH=$WIDTH
 OPENRD_VIDEO_HEIGHT=$HEIGHT
 OPENRD_VIDEO_FPS=$FPS

@@ -21,6 +21,7 @@
 - `run_openrd_rtp_smoke_test.sh`：legacy RTP 冒烟测试，使用 `live-rtp`，不覆盖默认 `live` publisher 链路。
 - `run_openrd_rtsp_smoke_test.sh`：启动默认 `rtsp` publisher 模式，验证 RTSP/HLS/WebRTC 全链路。
 - `monitor_openrd_video_chain.sh`：长期监测视频链路，分层记录 service、RTSP 读帧、WebRTC HTTP、MediaMTX journal 和 RK camera/ISP kernel 日志。
+- `monitor_openrd_resource_usage.sh`：默认 20 分钟采样 CPU、内存、温度、CPU 频率、devfreq、MPP session、视频进程 CPU/MEM、RTSP/WebRTC 健康状态，用于比较 `jpegdec` 与 `mppjpegdec` 链路资源占用。
 
 ## 当前默认视频发布
 
@@ -38,11 +39,49 @@
   -> RTSP/WebRTC
 ```
 
+可选硬解链路已在当前 RK3588 板端验证：
+
+```text
+/dev/openrd-cam-uvc
+  -> v4l2src MJPG
+  -> jpegparse
+  -> mppjpegdec format=NV12
+  -> mpph264enc
+  -> h264parse
+  -> rtspclientsink rtsp://127.0.0.1:8554/live
+```
+
+切换方式：设置 `OPENRD_VIDEO_MJPEG_DECODER=mpp`，或手动运行 `openrd-video-native test --mjpeg-decoder mpp` / `openrd-video-native start --mjpeg-decoder mpp`。
+
 默认板端地址：
 
 ```text
 RTSP:   rtsp://192.168.100.108:8554/live
 WebRTC: http://192.168.100.108:8889/live/
+```
+
+## 资源占用监测
+
+在板子上运行：
+
+```bash
+cd /home/linaro/OpenRD/tools/rk3588
+chmod +x ./monitor_openrd_resource_usage.sh
+./monitor_openrd_resource_usage.sh
+```
+
+默认运行 20 分钟，输出到：
+
+```text
+/home/linaro/OpenRD/vehicle/native_video/run/monitor/resource-<time>.csv
+/home/linaro/OpenRD/vehicle/native_video/run/monitor/resource-<time>.raw.log
+/home/linaro/OpenRD/vehicle/native_video/run/monitor/resource-<time>.summary.txt
+```
+
+快速短测示例：
+
+```bash
+DURATION_SEC=60 INTERVAL_SEC=5 ./monitor_openrd_resource_usage.sh
 ```
 
 生成 MediaMTX 配置时推荐显式传入板端稳定 IP，避免同一网卡上的动态地址被写入 WebRTC ICE candidate：

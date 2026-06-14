@@ -8,8 +8,9 @@ Type=simple
 User=linaro
 Group=video
 WorkingDirectory=/home/linaro/OpenRD/vehicle/native_video
+Environment=OPENRD_VIDEO_MJPEG_DECODER=software
 EnvironmentFile=-/home/linaro/OpenRD/vehicle/native_video/run/openrd-video-native-service.env
-ExecStart=/home/linaro/OpenRD/vehicle/native_video/openrd-video-native supervise --mode ${OPENRD_VIDEO_MODE} --device ${OPENRD_VIDEO_DEVICE} --input-format ${OPENRD_VIDEO_INPUT_FORMAT} --width ${OPENRD_VIDEO_WIDTH} --height ${OPENRD_VIDEO_HEIGHT} --fps ${OPENRD_VIDEO_FPS} --bitrate ${OPENRD_VIDEO_BITRATE} --gop ${OPENRD_VIDEO_GOP} --output ${OPENRD_VIDEO_OUTPUT} --rtsp-url ${OPENRD_VIDEO_RTSP_URL} --rtsp-protocols ${OPENRD_VIDEO_RTSP_PROTOCOLS} --rtsp-latency-ms ${OPENRD_VIDEO_RTSP_LATENCY_MS} --mpegts-host ${OPENRD_VIDEO_MPEGTS_HOST} --mpegts-port ${OPENRD_VIDEO_MPEGTS_PORT} --rtp-host ${OPENRD_VIDEO_RTP_HOST} --rtp-port ${OPENRD_VIDEO_RTP_PORT} --rtp-pt ${OPENRD_VIDEO_RTP_PAYLOAD_TYPE} --rtp-mtu ${OPENRD_VIDEO_RTP_MTU} --state-dir ${OPENRD_VIDEO_STATE_DIR} --log ${OPENRD_VIDEO_LOG}
+ExecStart=/home/linaro/OpenRD/vehicle/native_video/openrd-video-native supervise --mode ${OPENRD_VIDEO_MODE} --device ${OPENRD_VIDEO_DEVICE} --input-format ${OPENRD_VIDEO_INPUT_FORMAT} --mjpeg-decoder ${OPENRD_VIDEO_MJPEG_DECODER} --width ${OPENRD_VIDEO_WIDTH} --height ${OPENRD_VIDEO_HEIGHT} --fps ${OPENRD_VIDEO_FPS} --bitrate ${OPENRD_VIDEO_BITRATE} --gop ${OPENRD_VIDEO_GOP} --output ${OPENRD_VIDEO_OUTPUT} --rtsp-url ${OPENRD_VIDEO_RTSP_URL} --rtsp-protocols ${OPENRD_VIDEO_RTSP_PROTOCOLS} --rtsp-latency-ms ${OPENRD_VIDEO_RTSP_LATENCY_MS} --mpegts-host ${OPENRD_VIDEO_MPEGTS_HOST} --mpegts-port ${OPENRD_VIDEO_MPEGTS_PORT} --rtp-host ${OPENRD_VIDEO_RTP_HOST} --rtp-port ${OPENRD_VIDEO_RTP_PORT} --rtp-pt ${OPENRD_VIDEO_RTP_PAYLOAD_TYPE} --rtp-mtu ${OPENRD_VIDEO_RTP_MTU} --state-dir ${OPENRD_VIDEO_STATE_DIR} --log ${OPENRD_VIDEO_LOG}
 ExecStartPre=/bin/mkdir -p /home/linaro/OpenRD/vehicle/native_video/run
 ExecStop=/bin/kill -INT $MAINPID
 Restart=on-failure

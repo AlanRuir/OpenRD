@@ -16,7 +16,8 @@
 
 v0.1 支持：
 
-- 默认从 UVC USB 摄像头读取 MJPG 视频，并转为 NV12 后走 H.264 硬编链路；
+- 默认从 UVC USB 摄像头读取 MJPG 视频，经软件 JPEG 解码转为 NV12 后走 H.264 硬编链路；
+- 可选使用 Rockchip `mppjpegdec` 对 MJPG 输入做硬件解码；
 - 仍保留从 `rkisp_mainpath` CSI 节点读取 NV12 视频的可选路径；
 - 使用 `mpph264enc` 做 H.264 硬件编码；
 - `fakesink` 模式做链路验证；
@@ -68,6 +69,10 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 ./openrd-video-native start --mode rtsp --device /dev/openrd-cam-uvc --input-format mjpg --rtsp-url rtsp://127.0.0.1:8554/live
 ./openrd-video-native stop
 
+# 使用 RK3588 MPP JPEG 硬解 MJPG 输入
+./openrd-video-native test --device /dev/openrd-cam-uvc --input-format mjpg --mjpeg-decoder mpp
+./openrd-video-native pipeline --mode rtsp --device /dev/openrd-cam-uvc --input-format mjpg --mjpeg-decoder mpp
+
 # 打印实际 GStreamer pipeline
 ./openrd-video-native pipeline --mode file --output /tmp/openrd_camera_test.h264
 ```
@@ -76,6 +81,7 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 
 - 默认服务设备：`/dev/openrd-cam-uvc`；
 - 默认输入格式：`mjpg`，用于 UVC USB 摄像头；
+- 默认 MJPG 解码器：`software`，即 `jpegdec` + `videoconvert`；可选 `mpp`，即 `jpegparse` + `mppjpegdec format=NV12`；
 - 默认 UVC 别名：通过 udev 绑定 Sunplus SPCA2650 AV Cam（`1bcf:b112`）为 `/dev/openrd-cam-uvc`，避免依赖 `/dev/video41` 这种可能漂移的节点号；
 - CSI 可选别名：`/dev/openrd-cam-front` 与 `/dev/openrd-cam-rear` 仍保留给 RK ISP/IMX415 调试使用；使用 CSI 时应显式传 `--input-format nv12`；
 - 分辨率：`1280x720`；
@@ -98,6 +104,8 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 
 ```text
 /dev/openrd-cam-uvc -> v4l2src MJPG -> jpegdec -> videoconvert NV12 -> mpph264enc -> h264parse -> rtspclientsink -> MediaMTX live
+# optional:
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> rtspclientsink -> MediaMTX live
 reserved paths:
   live-front -> rtsp://<板子IP>:8554/live-front
   live-rear  -> rtsp://<板子IP>:8554/live-rear

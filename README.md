@@ -76,6 +76,46 @@ MVP 成功标准：
 - 视频 watchdog 使用真实 RTSP 读帧健康检查；默认只做有限自恢复，仍失败时进入 `faulted` 并停止 systemd 自动重启，避免持续反复拉起不稳定的 camera/ISP 链路；
 - 公网阶段：WebRTC + TURN/中继。
 
+### 摄像头 V4L2 诊断
+
+`tools/rk_camera_v4l2_probe.sh` 用于在 RK3588 板端反复测试 IMX415 对应的 V4L2 设备节点，判断 `/dev/video22`、`/dev/video31` 是稳定可出帧、偶发失败，还是必现不可用。
+
+脚本默认会停止 `openrd-video-native.service`，避免推流服务占用摄像头；每轮用 `v4l2-ctl` 抓取指定帧数，输出 CSV 汇总，并把每轮的 `v4l2-ctl` 输出和相关 `dmesg` 保存到 `/tmp/openrd-camera-probe-*`。
+
+同步到板端并运行：
+
+```bash
+scp tools/rk_camera_v4l2_probe.sh linaro@192.168.100.108:/tmp/
+ssh linaro@192.168.100.108 'chmod +x /tmp/rk_camera_v4l2_probe.sh && /tmp/rk_camera_v4l2_probe.sh'
+```
+
+常用短测：
+
+```bash
+OPENRD_CAMERA_PROBE_ITERATIONS=6 \
+OPENRD_CAMERA_PROBE_TIMEOUT_SEC=10 \
+OPENRD_CAMERA_PROBE_STREAM_COUNT=30 \
+/tmp/rk_camera_v4l2_probe.sh
+```
+
+每轮重启 `rkaiq_3A.service` 的对照测试：
+
+```bash
+OPENRD_CAMERA_PROBE_ITERATIONS=4 \
+OPENRD_CAMERA_PROBE_RESTART_RKAIQ_EACH_ITER=1 \
+OPENRD_CAMERA_PROBE_TIMEOUT_SEC=10 \
+OPENRD_CAMERA_PROBE_STREAM_COUNT=30 \
+/tmp/rk_camera_v4l2_probe.sh
+```
+
+结果判读：
+
+- `ok`：按 `stream-count` 成功抓到目标帧数；
+- `partial`：抓到过帧或写出过数据，但没有完整完成；
+- `timeout_no_frame`：超时且没有抓到帧，常见于摄像头/ISP 开流失败；
+- `failed`：`v4l2-ctl` 返回其他错误；
+- `summary_csv=...` 指向本次测试的完整 CSV 汇总。
+
 ## 推荐目录结构
 
 ```text

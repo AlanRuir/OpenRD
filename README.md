@@ -25,6 +25,47 @@ OpenRD 不是单纯的视频小车，也不是只做 AI 检测的演示项目。
 - 控制端：本机电脑浏览器 + Flutter 应用；
 - 执行机构：底盘 + 电机 + 电机驱动模块。
 
+## 当前实测状态
+
+截至当前阶段，局域网内已经跑通一条可实车驾驶的临时直连链路：
+
+```text
+浏览器 Flutter 前端
+  -> HTTP
+ESP32 / OpenRD-Driver
+  -> UART2
+四路编码器电机驱动板
+  -> 四轮底盘
+```
+
+这条链路暂时绕过 RK3588/ROS2，用于优先验证手柄、前端驾驶体验、ESP32 WiFi/HTTP 和四电机驱动协议。
+
+当前已验证：
+
+- ESP32 可通过 WiFi STA 接入局域网，默认地址实测为 `http://192.168.100.114`；
+- OpenRD 前端可通过浏览器 Gamepad API 读取手柄；
+- 前端可直接请求 OpenRD-Driver 的 `GET /status` 和 `POST /control`；
+- 四电机驱动协议使用 `$spd:m1,m2,m3,m4#` 小写命令；
+- 实车四路物理映射当前按 `M1/M2 = 左侧`、`M3/M4 = 右侧` 处理；
+- 前进、后退、左转、右转、停止已能通过手柄控制；
+- 前端有速度上限滑块，建议首次实车测试使用 `200` 或 `300`；
+- 前端会每 3 秒刷新 OpenRD-Driver `/status`，每 30 秒触发一次 `/read_vol`，并按 12V/3S 电池估算电量显示；
+- OpenRD-Driver 已修复浏览器 CORS，`/control` 不再返回重复的 `Access-Control-Allow-Origin`。
+
+当前前端静态调试方式：
+
+```powershell
+cd D:\Projects\OpenRD\frontend\openrd_frontend
+flutter build web --debug
+python -m http.server 8791 --bind 127.0.0.1 -d build\web
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:8791/
+```
+
 ## MVP 目标
 
 第一阶段只做局域网 MVP，不直接引入公网、双摄、YOLO 或复杂云端架构。
@@ -62,8 +103,9 @@ MVP 成功标准：
 - 前端框架：Flutter；
 - 支持平台：Web、Android、iOS；
 - 初期控制输入：浏览器 + 手柄、手机触屏；
-- 初期控制链路：WebSocket；
-- 当前 mock 验证：`dart run tools/mock_control_ws_server.dart`，前端默认连接 `ws://127.0.0.1:8080/control`；
+- 当前实车调试链路：Flutter Web 通过 HTTP 直连 OpenRD-Driver；
+- 保留 mock 验证：`dart run tools/mock_control_ws_server.dart`，可连接 `ws://127.0.0.1:8080/control`；
+- ROS2 链路目标：后续将同一套驾驶输入接到 WebSocket bridge -> safety -> ESP32 bridge；
 - 后续升级方向：WebRTC DataChannel；
 - 说明：Flutter 不直接接入 ROS2 DDS，而是通过 WebSocket/DataChannel bridge 与车端 ROS2 graph 通信。
 
@@ -214,4 +256,10 @@ vehicle/
 
 ## 下一步
 
-建议下一步开始搭建 `vehicle/ros2_ws`，优先创建 `openrd_msgs`、`openrd_web_bridge`、`openrd_safety`、`openrd_esp32_bridge` 和 `openrd_bringup` 的基础骨架。
+建议下一步按以下顺序推进：
+
+- 继续稳定当前 Flutter Web -> OpenRD-Driver HTTP 直连驾驶链路；
+- 固化四电机物理映射、速度上限、急停和电池显示；
+- 在 ESP32 固件中逐步加入控制超时停车和低电保护；
+- 将当前已验证的驾驶输入模型接回 `openrd_web_bridge` -> `openrd_safety` -> `openrd_esp32_bridge`；
+- 决定是否把独立的 `OpenRD-Driver` PlatformIO 工程迁入 `OpenRD/firmware/`，或保留为独立仓库并在 OpenRD 中只保留文档和启动脚本。

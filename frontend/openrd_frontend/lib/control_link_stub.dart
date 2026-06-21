@@ -2,12 +2,33 @@ import 'dart:async';
 
 enum ControlLinkState { disconnected, connecting, connected, error }
 
+class DriverBatterySnapshot {
+  const DriverBatterySnapshot({
+    required this.available,
+    required this.profile,
+    required this.voltageV,
+    required this.ageMs,
+  });
+
+  const DriverBatterySnapshot.unknown()
+    : available = false,
+      profile = '12V_3S',
+      voltageV = 0.0,
+      ageMs = 0;
+
+  final bool available;
+  final String profile;
+  final double voltageV;
+  final int ageMs;
+}
+
 class DriveControlMessage {
   const DriveControlMessage({
     required this.seq,
     required this.timestampMs,
     required this.steering,
     required this.throttle,
+    required this.speedLimit,
     required this.stop,
     required this.source,
   });
@@ -16,6 +37,7 @@ class DriveControlMessage {
   final int timestampMs;
   final double steering;
   final double throttle;
+  final int speedLimit;
   final bool stop;
   final String source;
 
@@ -26,6 +48,7 @@ class DriveControlMessage {
       'timestamp_ms': timestampMs,
       'steering': steering,
       'throttle': throttle,
+      'speed_limit': speedLimit.clamp(0, 1000),
       'stop': stop,
       'source': source,
     };
@@ -41,6 +64,7 @@ class ControlLinkSnapshot {
     required this.receivedCount,
     required this.lastSent,
     required this.lastReceived,
+    this.battery = const DriverBatterySnapshot.unknown(),
   });
 
   factory ControlLinkSnapshot.initial(String endpoint) {
@@ -52,6 +76,7 @@ class ControlLinkSnapshot {
       receivedCount: 0,
       lastSent: null,
       lastReceived: '',
+      battery: const DriverBatterySnapshot.unknown(),
     );
   }
 
@@ -62,6 +87,7 @@ class ControlLinkSnapshot {
   final int receivedCount;
   final DriveControlMessage? lastSent;
   final String lastReceived;
+  final DriverBatterySnapshot battery;
 
   bool get isConnected => state == ControlLinkState.connected;
 

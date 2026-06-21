@@ -47,10 +47,11 @@ class ControlDashboardPage extends StatefulWidget {
 class _ControlDashboardPageState extends State<ControlDashboardPage> {
   DriveCommand _lastCommand = DriveCommand.stop;
   final TextEditingController _controlEndpointController =
-      TextEditingController(text: 'ws://127.0.0.1:8080/control');
+      TextEditingController(text: 'http://192.168.100.114');
   bool _manualMode = true;
   double _steering = 0.0;
   double _throttle = 0.0;
+  int _speedLimit = 500;
   bool _streamMuted = true;
   int _streamReloadToken = 0;
   StreamPlaybackState _streamState = StreamPlaybackState.loading;
@@ -61,7 +62,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   );
   StreamSubscription<ControlLinkSnapshot>? _controlLinkSubscription;
   ControlLinkSnapshot _controlLinkSnapshot = ControlLinkSnapshot.initial(
-    'ws://127.0.0.1:8080/control',
+    'http://192.168.100.114',
   );
   Timer? _controlSendTimer;
   int _controlSeq = 0;
@@ -353,6 +354,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       timestampMs: DateTime.now().millisecondsSinceEpoch,
       steering: _steering,
       throttle: _throttle,
+      speedLimit: _speedLimit,
       stop: stop,
       source: _gamepadSnapshot.connected ? 'gamepad' : 'ui',
     );
@@ -438,6 +440,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               streamColor: _streamColor(),
               gamepadState: _gamepadSnapshot.connected ? '已连接' : '未连接',
               gamepadConnected: _gamepadSnapshot.connected,
+              battery: _controlLinkSnapshot.battery,
               manualMode: _manualMode,
               lastCommand: _commandLabel(_lastCommand),
               onToggleConnection: _toggleControlLink,
@@ -466,6 +469,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               manualMode: _manualMode,
               steering: _steering,
               throttle: _throttle,
+              speedLimit: _speedLimit,
+              battery: _controlLinkSnapshot.battery,
               lastCommand: _commandLabel(_lastCommand),
               gamepadSnapshot: _gamepadSnapshot,
               onModeChanged: (value) {
@@ -473,6 +478,12 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
                   _manualMode = value;
                 });
                 _pushEvent(value ? '切换到手动模式' : '切换到自动预留模式');
+              },
+              onSpeedLimitChanged: (value) {
+                setState(() {
+                  _speedLimit = value.round().clamp(100, 1000).toInt();
+                });
+                _queueControlSend();
               },
               onForward: () => _sendCommand(DriveCommand.forward),
               onBackward: () => _sendCommand(DriveCommand.backward),
@@ -557,6 +568,7 @@ class _DashboardStatusBar extends StatelessWidget {
     required this.streamColor,
     required this.gamepadState,
     required this.gamepadConnected,
+    required this.battery,
     required this.manualMode,
     required this.lastCommand,
     required this.onToggleConnection,
@@ -569,6 +581,7 @@ class _DashboardStatusBar extends StatelessWidget {
   final Color streamColor;
   final String gamepadState;
   final bool gamepadConnected;
+  final DriverBatterySnapshot battery;
   final bool manualMode;
   final String lastCommand;
   final VoidCallback onToggleConnection;
@@ -621,6 +634,12 @@ class _DashboardStatusBar extends StatelessWidget {
                   color: gamepadConnected
                       ? const Color(0xFF2E7D32)
                       : Colors.orange,
+                ),
+                _StatusPill(
+                  icon: _batteryIcon(battery),
+                  label: '电池',
+                  value: _batterySummary(battery),
+                  color: _batteryColor(battery),
                 ),
                 _StatusPill(
                   icon: Icons.tune,
@@ -683,6 +702,50 @@ class _DashboardStatusBar extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  String _batterySummary(DriverBatterySnapshot battery) {
+    if (!battery.available) {
+      return '未读取';
+    }
+    return '${battery.voltageV.toStringAsFixed(1)}V · ${_batteryPercent(battery).round()}%';
+  }
+
+  IconData _batteryIcon(DriverBatterySnapshot battery) {
+    if (!battery.available) {
+      return Icons.battery_unknown;
+    }
+    final percent = _batteryPercent(battery);
+    if (percent >= 70) {
+      return Icons.battery_full;
+    }
+    if (percent >= 35) {
+      return Icons.battery_5_bar;
+    }
+    if (percent >= 15) {
+      return Icons.battery_2_bar;
+    }
+    return Icons.battery_alert;
+  }
+
+  Color _batteryColor(DriverBatterySnapshot battery) {
+    if (!battery.available) {
+      return Colors.orange;
+    }
+    if (battery.voltageV < 9.6) {
+      return const Color(0xFFC62828);
+    }
+    if (battery.voltageV < 10.2) {
+      return const Color(0xFFEF6C00);
+    }
+    if (battery.voltageV < 10.8) {
+      return const Color(0xFFF9A825);
+    }
+    return const Color(0xFF2E7D32);
+  }
+
+  double _batteryPercent(DriverBatterySnapshot battery) {
+    return (((battery.voltageV - 8.1) / (12.6 - 8.1)) * 100).clamp(0.0, 100.0);
   }
 }
 
@@ -828,9 +891,12 @@ class _DriveControlPanel extends StatelessWidget {
     required this.manualMode,
     required this.steering,
     required this.throttle,
+    required this.speedLimit,
+    required this.battery,
     required this.lastCommand,
     required this.gamepadSnapshot,
     required this.onModeChanged,
+    required this.onSpeedLimitChanged,
     required this.onForward,
     required this.onBackward,
     required this.onLeft,
@@ -845,9 +911,12 @@ class _DriveControlPanel extends StatelessWidget {
   final bool manualMode;
   final double steering;
   final double throttle;
+  final int speedLimit;
+  final DriverBatterySnapshot battery;
   final String lastCommand;
   final GamepadSnapshot gamepadSnapshot;
   final ValueChanged<bool> onModeChanged;
+  final ValueChanged<double> onSpeedLimitChanged;
   final VoidCallback onForward;
   final VoidCallback onBackward;
   final VoidCallback onLeft;
@@ -883,6 +952,7 @@ class _DriveControlPanel extends StatelessWidget {
                 _SmallInfo(label: '目标', value: endpoint),
                 _SmallInfo(label: '链路', value: controlSnapshot.stateLabel),
                 _SmallInfo(label: '最近', value: lastCommand),
+                _SmallInfo(label: '上限', value: '$speedLimit'),
               ],
             ),
             const SizedBox(height: 14),
@@ -908,6 +978,13 @@ class _DriveControlPanel extends StatelessWidget {
               value: throttle,
               color: const Color(0xFF2E7D32),
             ),
+            const SizedBox(height: 10),
+            _SpeedLimitSlider(
+              value: speedLimit,
+              onChanged: onSpeedLimitChanged,
+            ),
+            const SizedBox(height: 10),
+            _BatteryStatusCard(snapshot: battery),
             const SizedBox(height: 14),
             const Divider(height: 1),
             const SizedBox(height: 14),
@@ -934,6 +1011,174 @@ class _DriveControlPanel extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _SpeedLimitSlider extends StatelessWidget {
+  const _SpeedLimitSlider({required this.value, required this.onChanged});
+
+  final int value;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Text('速度上限', style: theme.textTheme.titleSmall),
+            const Spacer(),
+            Text(
+              '$value',
+              style: theme.textTheme.titleSmall?.copyWith(
+                color: theme.colorScheme.primary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        Slider(
+          value: value.toDouble(),
+          min: 100,
+          max: 1000,
+          divisions: 9,
+          label: '$value',
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+}
+
+class _BatteryStatusCard extends StatelessWidget {
+  const _BatteryStatusCard({required this.snapshot});
+
+  final DriverBatterySnapshot snapshot;
+
+  static const double _fullVoltage = 12.6;
+  static const double _cutoffVoltage = 8.1;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final available = snapshot.available;
+    final percent = available ? _percent(snapshot.voltageV) : 0.0;
+    final color = _statusColor(snapshot);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(_icon(snapshot), color: color),
+                const SizedBox(width: 8),
+                Text('电池', style: theme.textTheme.titleSmall),
+                const Spacer(),
+                Text(
+                  available
+                      ? '${snapshot.voltageV.toStringAsFixed(1)}V'
+                      : '--.-V',
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    color: color,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: percent / 100.0,
+                minHeight: 9,
+                color: color,
+                backgroundColor: color.withValues(alpha: 0.16),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  available ? '${percent.round()}%' : '等待读取',
+                  style: theme.textTheme.bodySmall,
+                ),
+                const Spacer(),
+                Text(
+                  _stateText(snapshot),
+                  style: theme.textTheme.bodySmall?.copyWith(color: color),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static double _percent(double voltage) {
+    return (((voltage - _cutoffVoltage) / (_fullVoltage - _cutoffVoltage)) *
+            100)
+        .clamp(0.0, 100.0);
+  }
+
+  static String _stateText(DriverBatterySnapshot snapshot) {
+    if (!snapshot.available) {
+      return '连接后自动刷新';
+    }
+    if (snapshot.voltageV < 9.6) {
+      return '建议停止';
+    }
+    if (snapshot.voltageV < 10.2) {
+      return '建议限速';
+    }
+    if (snapshot.voltageV < 10.8) {
+      return '低电提醒';
+    }
+    return '电量正常';
+  }
+
+  static Color _statusColor(DriverBatterySnapshot snapshot) {
+    if (!snapshot.available) {
+      return Colors.orange;
+    }
+    if (snapshot.voltageV < 9.6) {
+      return const Color(0xFFC62828);
+    }
+    if (snapshot.voltageV < 10.2) {
+      return const Color(0xFFEF6C00);
+    }
+    if (snapshot.voltageV < 10.8) {
+      return const Color(0xFFF9A825);
+    }
+    return const Color(0xFF2E7D32);
+  }
+
+  static IconData _icon(DriverBatterySnapshot snapshot) {
+    if (!snapshot.available) {
+      return Icons.battery_unknown;
+    }
+    final percent = _percent(snapshot.voltageV);
+    if (percent >= 70) {
+      return Icons.battery_full;
+    }
+    if (percent >= 35) {
+      return Icons.battery_5_bar;
+    }
+    if (percent >= 15) {
+      return Icons.battery_2_bar;
+    }
+    return Icons.battery_alert;
   }
 }
 
@@ -1355,7 +1600,10 @@ class _DebugPanel extends StatelessWidget {
                 width: 280,
                 child: TextField(
                   controller: controlEndpointController,
-                  decoration: const InputDecoration(labelText: 'WebSocket'),
+                  decoration: const InputDecoration(
+                    labelText: '控制地址',
+                    helperText: 'OpenRD-Driver HTTP 或 WebSocket',
+                  ),
                 ),
               ),
               _SmallInfo(label: '状态', value: controlSnapshot.stateLabel),

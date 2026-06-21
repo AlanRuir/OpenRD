@@ -1,0 +1,21 @@
+[Unit]
+Description=OpenRD public control service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/OpenRD/server/openrd_control_service
+Environment=OPENRD_CONTROL_HOST=0.0.0.0
+Environment=OPENRD_CONTROL_PORT=8790
+Environment=OPENRD_CONTROL_ALLOW_ORIGIN=*
+Environment=OPENRD_CONTROL_AGENT_TIMEOUT_SEC=45
+EnvironmentFile=-/home/ubuntu/OpenRD/server/openrd_control_service/run/openrd-control.env
+ExecStart=/usr/bin/python3 /home/ubuntu/OpenRD/server/openrd_control_service/openrd_control_service.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

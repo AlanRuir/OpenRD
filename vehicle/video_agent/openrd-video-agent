@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""OpenRD RK3588 video control agent.
+
+The agent runs on the RK3588 host OS and actively polls the public OpenRD
+control service.  It only controls openrd-video-native.service and never opens a
+public inbound port on the vehicle network.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from typing import Any
+
+
+DEFAULT_CLOUD_URL = os.environ.get(
+    "OPENRD_VIDEO_AGENT_CLOUD_URL",
+    "http://43.139.25.165:8790",
+).rstrip("/")
+DEFAULT_VEHICLE_ID = os.environ.get("OPENRD_VIDEO_AGENT_VEHICLE_ID", "openrd-001")
+DEFAULT_TOKEN = os.environ.get("OPENRD_VIDEO_AGENT_TOKEN", "")
+DEFAULT_POLL_WAIT_SEC = int(os.environ.get("OPENRD_VIDEO_AGENT_POLL_WAIT_SEC", "20"))
+DEFAULT_LOCAL_LEASE_SEC = int(os.environ.get("OPENRD_VIDEO_AGENT_LOCAL_LEASE_SEC", "150"))
+DEFAULT_STATUS_INTERVAL_SEC = float(
+    os.environ.get("OPENRD_VIDEO_AGENT_STATUS_INTERVAL_SEC", "3")
+)
+VIDEO_SERVICE = os.environ.get(
+    "OPENRD_VIDEO_AGENT_SERVICE",
+    "openrd-video-native.service",
+)
+VIDEO_RUNTIME = os.environ.get(
+    "OPENRD_VIDEO_AGENT_RUNTIME",
+    "/home/linaro/OpenRD/vehicle/native_video/openrd-video-native",
+)
+PLAY_URL = os.environ.get(
+    "OPENRD_VIDEO_AGENT_PLAY_URL",
+    "http://43.139.25.165:8888/live/openrd.live.flv",
+)
+
+
+def run_command(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
+    try:
+        completed = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return 124, exc.stdout or "", exc.stderr or "command timed out"
+    except OSError as exc:
+        return 127, "", str(exc)
+    return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+
+
+def systemctl(action: str) -> tuple[bool, str]:
+    code, stdout, stderr = run_command(["sudo", "systemctl", action, VIDEO_SERVICE], 20)
+    return code == 0, stderr or stdout
+
+
+def systemd_active() -> str:
+    code, stdout, _ = run_command(["systemctl", "is-active", VIDEO_SERVICE], 5)
+    if code == 0 and stdout:
+        return stdout.strip()
+    return stdout.strip() or "inactive"
+
+
+def runtime_status() -> dict[str, Any]:
+    if not os.path.exists(VIDEO_RUNTIME):
+        return {"state": "unknown", "last_error": f"missing runtime: {VIDEO_RUNTIME}"}
+
+    code, stdout, stderr = run_command([VIDEO_RUNTIME, "status", "--json"], 8)
+    if code != 0:
+        return {
+            "state": "unknown",
+            "last_error": stderr or stdout or f"runtime status exited {code}",
+        }
+    try:
+        parsed = json.loads(stdout)
+    except json.JSONDecodeError:
+        return {"state": "unknown", "last_error": "runtime status returned invalid JSON"}
+    return parsed if isinstance(parsed, dict) else {"state": "unknown"}
+
+
+def read_status(last_error: str = "") -> dict[str, Any]:
+    active = systemd_active()
+    runtime = runtime_status()
+    runtime_state = str(runtime.get("state", "") or "").lower()
+    runtime_running = bool(runtime.get("runtime_running"))
+    service_active = active == "active"
+
+    if runtime_state == "faulted":
+        state = "faulted"
+    elif service_active or runtime_running:
+        state = "running"
+    elif runtime_state == "starting":
+        state = "starting"
+    elif active in {"activating", "deactivating"}:
+        state = "starting" if active == "activating" else "stopping"
+    else:
+        state = "stopped"
+
+    return {
+        "state": state,
+        "service": VIDEO_SERVICE,
+        "systemd_active": active,
+        "service_active": service_active,
+        "runtime_running": runtime_running,
+        "pid": int(runtime.get("pid") or 0),
+        "mode": runtime.get("mode") or "rtmp",
+        "rtmp_url": runtime.get("rtmp_url") or "",
+        "rtsp_url": runtime.get("rtsp_url") or "",
+        "play_url": PLAY_URL,
+        "last_error": last_error or str(runtime.get("last_error", "") or ""),
+        "runtime": runtime,
+        "agent_time_ms": int(time.time() * 1000),
+    }
+
+
+class VideoAgent:
+    def __init__(
+        self,
+        cloud_url: str,
+        vehicle_id: str,
+        token: str,
+        poll_wait_sec: int,
+        local_lease_sec: int,
+        status_interval_sec: float,
+    ) -> None:
+        self.cloud_url = cloud_url.rstrip("/")
+        self.vehicle_id = vehicle_id
+        self.token = token
+        self.poll_wait_sec = poll_wait_sec
+        self.local_lease_sec = local_lease_sec
+        self.status_interval_sec = status_interval_sec
+        self.lease_deadline = 0.0
+        self.last_status_at = 0.0
+        self.last_status: dict[str, Any] = read_status()
+        self.pending_result: dict[str, Any] = {}
+        self.last_error = ""
+
+    def run(self) -> int:
+        print(
+            f"openrd-video-agent vehicle={self.vehicle_id} cloud={self.cloud_url}",
+            flush=True,
+        )
+        while True:
+            self._enforce_local_lease()
+            try:
+                response = self._poll()
+                self._handle_command(response.get("command") or {"type": "noop"})
+            except KeyboardInterrupt:
+                return 0
+            except Exception as exc:  # noqa: BLE001 - keep agent alive and self-report.
+                self.last_error = str(exc)
+                print(f"agent error: {exc}", file=sys.stderr, flush=True)
+                self._enforce_local_lease()
+                time.sleep(3)
+
+    def _poll(self) -> dict[str, Any]:
+        current = time.time()
+        if current - self.last_status_at >= self.status_interval_sec:
+            self.last_status = read_status(self.last_error)
+            self.last_status_at = current
+
+        payload: dict[str, Any] = {
+            "vehicle_id": self.vehicle_id,
+            "agent": "openrd-video-agent",
+            "version": "0.1",
+            "wait_sec": self.poll_wait_sec,
+            "status": self.last_status,
+        }
+        if self.pending_result:
+            payload["result"] = self.pending_result
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.cloud_url}/api/agent/poll",
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.poll_wait_sec + 10) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise RuntimeError(f"cloud returned HTTP {exc.code}: {detail}") from exc
+
+        self.pending_result = {}
+        parsed = json.loads(raw.decode("utf-8"))
+        if not isinstance(parsed, dict) or not parsed.get("ok"):
+            raise RuntimeError(f"invalid cloud response: {parsed!r}")
+        return parsed
+
+    def _handle_command(self, command: dict[str, Any]) -> None:
+        command_type = str(command.get("type") or "noop")
+        if command_type == "noop":
+            return
+
+        request_id = str(command.get("request_id") or "")
+        print(f"command {command_type} request_id={request_id}", flush=True)
+        try:
+            if command_type == "video.start":
+                result = self._start_video(command)
+            elif command_type == "video.renew":
+                result = self._renew_video(command)
+            elif command_type == "video.stop":
+                result = self._stop_video(command)
+            elif command_type == "video.status":
+                result = self._status_result(True, "")
+            else:
+                result = self._status_result(False, f"unsupported command: {command_type}")
+        except Exception as exc:  # noqa: BLE001
+            result = self._status_result(False, str(exc))
+
+        result.update({"request_id": request_id, "command": command_type})
+        self.pending_result = result
+        self.last_status = result.get("status") or read_status(self.last_error)
+        self.last_status_at = time.time()
+
+    def _start_video(self, command: dict[str, Any]) -> dict[str, Any]:
+        lease_sec = int(command.get("lease_sec") or self.local_lease_sec)
+        self.lease_deadline = time.time() + max(30, lease_sec)
+
+        status = read_status()
+        if status["state"] != "running":
+            ok, detail = systemctl("start")
+            if not ok:
+                self.last_error = detail
+                return self._status_result(False, detail)
+            time.sleep(1.5)
+        self.last_error = ""
+        return self._status_result(True, "")
+
+    def _renew_video(self, command: dict[str, Any]) -> dict[str, Any]:
+        lease_sec = int(command.get("lease_sec") or self.local_lease_sec)
+        self.lease_deadline = time.time() + max(30, lease_sec)
+        self.last_error = ""
+        return self._status_result(True, "")
+
+    def _stop_video(self, command: dict[str, Any]) -> dict[str, Any]:
+        self.lease_deadline = 0.0
+        status = read_status()
+        if status["state"] != "stopped":
+            ok, detail = systemctl("stop")
+            if not ok:
+                self.last_error = detail
+                return self._status_result(False, detail)
+            time.sleep(0.8)
+        self.last_error = ""
+        return self._status_result(True, "")
+
+    def _status_result(self, ok: bool, error: str) -> dict[str, Any]:
+        status = read_status(error)
+        return {
+            "ok": ok,
+            "state": status.get("state", "unknown"),
+            "service": VIDEO_SERVICE,
+            "lease_expires_in_sec": max(0, int(self.lease_deadline - time.time())),
+            "last_error": error,
+            "status": status,
+        }
+
+    def _enforce_local_lease(self) -> None:
+        if self.lease_deadline <= 0:
+            return
+        if time.time() <= self.lease_deadline:
+            return
+        status = read_status()
+        if status["state"] == "running":
+            print("local lease expired; stopping video service", flush=True)
+            ok, detail = systemctl("stop")
+            self.pending_result = self._status_result(ok, "" if ok else detail)
+        self.lease_deadline = 0.0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="OpenRD RK3588 video agent")
+    parser.add_argument("--cloud-url", default=DEFAULT_CLOUD_URL)
+    parser.add_argument("--vehicle-id", default=DEFAULT_VEHICLE_ID)
+    parser.add_argument("--token", default=DEFAULT_TOKEN)
+    parser.add_argument("--poll-wait-sec", type=int, default=DEFAULT_POLL_WAIT_SEC)
+    parser.add_argument("--local-lease-sec", type=int, default=DEFAULT_LOCAL_LEASE_SEC)
+    parser.add_argument(
+        "--status-interval-sec",
+        type=float,
+        default=DEFAULT_STATUS_INTERVAL_SEC,
+    )
+    args = parser.parse_args()
+
+    agent = VideoAgent(
+        cloud_url=args.cloud_url,
+        vehicle_id=args.vehicle_id,
+        token=args.token,
+        poll_wait_sec=args.poll_wait_sec,
+        local_lease_sec=args.local_lease_sec,
+        status_interval_sec=args.status_interval_sec,
+    )
+    return agent.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

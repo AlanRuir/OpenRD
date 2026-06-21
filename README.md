@@ -51,6 +51,8 @@ ESP32 / OpenRD-Driver
 - 前端有速度上限滑块，建议首次实车测试使用 `200` 或 `300`；
 - 前端会每 3 秒刷新 OpenRD-Driver `/status`，每 30 秒触发一次 `/read_vol`，并按 12V/3S 电池估算电量显示；
 - 前端视频默认播放云端 ZLMediaKit HTTP-FLV：`http://43.139.25.165:8888/live/openrd.live.flv`；
+- 前端视频启停默认走公网控制服务：`http://43.139.25.165:8790`；
+- RK3588 宿主 `openrd-video-agent.service` 已接入云端 control service，可按前端 lease 启停 `openrd-video-native.service`；
 - OpenRD-Driver 已修复浏览器 CORS，`/control` 不再返回重复的 `Access-Control-Allow-Origin`。
 
 当前前端静态调试方式：
@@ -67,17 +69,7 @@ python -m http.server 8791 --bind 127.0.0.1 -d build\web
 http://127.0.0.1:8791/
 ```
 
-不需要看实时视频时，可以停止 RK3588 板端推流，避免消耗公网流量：
-
-```powershell
-ssh linaro@192.168.100.108 "sudo systemctl stop openrd-video-native.service"
-```
-
-需要恢复视频时再启动：
-
-```powershell
-ssh linaro@192.168.100.108 "sudo systemctl start openrd-video-native.service"
-```
+视频推流不再要求长期常开。前端点击“启动视频推流”后，会通过公网 control service 通知 RK3588 上的 `openrd-video-agent.service` 启动 `openrd-video-native.service`；播放期间前端会续约 lease，点击停止或 lease 超时后车端自动停止推流，避免持续消耗公网流量。
 
 ## MVP 目标
 
@@ -126,11 +118,12 @@ MVP 成功标准：
 
 - 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTMP publisher 主动推送到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
 - 保留软件解码回退路径，可通过 `OPENRD_VIDEO_MJPEG_DECODER=software` 或 `--mjpeg-decoder software` 切换到 `jpegdec`/`videoconvert`；
+- 公网视频控制服务：`http://43.139.25.165:8790`；
 - 公网 RTSP 播放地址：`rtsp://43.139.25.165/live/openrd`；
 - 公网 HTTP-FLV 播放地址：`http://43.139.25.165:8888/live/openrd.live.flv`；
 - Flutter 前端当前默认使用公网 HTTP-FLV 播放地址；
 - 本机 MediaMTX 保留为局域网回退调试路径：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
-- `openrd-video-native.service` 启用 systemd 开机自启动；`mediamtx.service` 可作为局域网回退服务保留；
+- `openrd-video-agent.service` 启用 systemd 开机自启动；`openrd-video-native.service` 由 agent 根据前端 lease 按需启停；`mediamtx.service` 可作为局域网回退服务保留；
 - CSI/IMX415 链路保留为可选调试路径，不再作为默认视频输入；
 - 视频 watchdog 使用真实 RTSP 读帧健康检查；当前 UVC 调试阶段默认关闭自动健康重启，避免排查时反复拉起视频链路；
 - 公网阶段：WebRTC + TURN/中继。
@@ -278,6 +271,8 @@ vehicle/
 - `docs/04_vehicle_ros2_architecture.md`：RK3588 车端 ROS2-first 架构；
 - `docs/05_rk3588_deployment.md`：RK3588 原生视频与 ROS2 chroot 部署边界。`vehicle/native_video/README.md` 记录原生视频 runtime，`openrd_video_node` 负责管理它。
 - `docs/06_public_video_control.md`：公网视频按需启停方案，定义云端 control service、车端 video agent、前端启停和 lease 机制。
+- `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
+- `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。
 
 ## 下一步
 

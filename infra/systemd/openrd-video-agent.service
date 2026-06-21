@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenRD RK3588 video control agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=linaro
+Group=linaro
+WorkingDirectory=/home/linaro/OpenRD/vehicle/video_agent
+Environment=OPENRD_VIDEO_AGENT_CLOUD_URL=http://43.139.25.165:8790
+Environment=OPENRD_VIDEO_AGENT_VEHICLE_ID=openrd-001
+EnvironmentFile=-/home/linaro/OpenRD/vehicle/video_agent/run/openrd-video-agent.env
+ExecStart=/usr/bin/python3 /home/linaro/OpenRD/vehicle/video_agent/openrd-video-agent
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -39,7 +39,10 @@ http://43.139.25.165:8888/live/openrd.live.flv
 
 - `ZLM Host`：ZLMediaKit 服务器地址，默认是 `43.139.25.165`
 - `Path`：ZLMediaKit 流路径，默认是 `live/openrd`
+- `Cloud API`：公网视频控制服务地址，默认是 `http://43.139.25.165:8790`
 - 实际播放 URL 会自动拼成 `http://<zlm-host>:8888/<path>.live.flv`
+
+视频面板不会在页面打开时自动拉起推流。点击“启动视频推流”后，前端会请求云端 control service，再由 RK3588 上的 `openrd-video-agent` 启动 `openrd-video-native.service`。视频播放期间前端每 30 秒续约一次；点击“停止视频推流”或续约超时后，车端会停止推流以避免持续消耗公网流量。
 
 RK3588 板端通过 `openrd-video-native.service` 主动推送 RTMP 到云端：
 

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'control_link.dart';
 import 'gamepad_input.dart';
+import 'video_control.dart';
 import 'video_stream.dart';
 
 void main() {
@@ -35,7 +36,7 @@ class OpenRdApp extends StatelessWidget {
 
 enum DriveCommand { forward, backward, left, right, stop }
 
-enum StreamPlaybackState { loading, ready, error }
+enum StreamPlaybackState { stopped, loading, ready, error }
 
 class ControlDashboardPage extends StatefulWidget {
   const ControlDashboardPage({super.key});
@@ -47,6 +48,9 @@ class ControlDashboardPage extends StatefulWidget {
 class _ControlDashboardPageState extends State<ControlDashboardPage> {
   static const String _defaultStreamHost = '43.139.25.165';
   static const String _defaultStreamPath = 'live/openrd';
+  static const String _defaultVideoControlUrl = 'http://43.139.25.165:8790';
+  static const String _videoVehicleId = 'openrd-001';
+  static const int _videoLeaseSec = 120;
 
   DriveCommand _lastCommand = DriveCommand.stop;
   final TextEditingController _controlEndpointController =
@@ -56,18 +60,26 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   double _throttle = 0.0;
   int _speedLimit = 500;
   bool _streamMuted = true;
+  bool _videoPlaybackEnabled = false;
+  bool _videoCommandBusy = false;
   int _streamReloadToken = 0;
-  StreamPlaybackState _streamState = StreamPlaybackState.loading;
-  String _streamStatusMessage = '正在加载视频流';
+  StreamPlaybackState _streamState = StreamPlaybackState.stopped;
+  String _streamStatusMessage = '视频推流未启动';
+  String _videoCloudState = 'unknown';
+  late final String _videoViewerId =
+      'openrd-web-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(99999)}';
 
   late final ControlLink _controlLink = ControlLink(
     endpoint: _controlEndpointController.text.trim(),
   );
+  final VideoControlClient _videoControl = VideoControlClient();
   StreamSubscription<ControlLinkSnapshot>? _controlLinkSubscription;
   ControlLinkSnapshot _controlLinkSnapshot = ControlLinkSnapshot.initial(
     'http://192.168.100.114',
   );
   Timer? _controlSendTimer;
+  Timer? _videoRenewTimer;
+  Timer? _videoCloudStatusTimer;
   int _controlSeq = 0;
 
   final GamepadInput _gamepadInput = GamepadInput();
@@ -78,6 +90,9 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   );
   final TextEditingController _streamPathController = TextEditingController(
     text: _defaultStreamPath,
+  );
+  final TextEditingController _videoControlController = TextEditingController(
+    text: _defaultVideoControlUrl,
   );
   final List<String> _eventLog = <String>['OpenRD 控制台已启动'];
 
@@ -95,11 +110,18 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       const Duration(milliseconds: 50),
       (_) => _flushControlIfNeeded(),
     );
+    _videoCloudStatusTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => unawaited(_refreshVideoCloudStatus()),
+    );
+    unawaited(_refreshVideoCloudStatus());
   }
 
   @override
   void dispose() {
     _controlSendTimer?.cancel();
+    _videoRenewTimer?.cancel();
+    _videoCloudStatusTimer?.cancel();
     _controlLinkSubscription?.cancel();
     _controlLink.dispose();
     _gamepadSubscription?.cancel();
@@ -107,6 +129,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
     _controlEndpointController.dispose();
     _streamHostController.dispose();
     _streamPathController.dispose();
+    _videoControlController.dispose();
     super.dispose();
   }
 
@@ -124,6 +147,14 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   String get _streamReaderUrl => '';
 
   String get _streamWhepUrl => '';
+
+  String get _videoControlUrl {
+    final value = _videoControlController.text.trim();
+    if (value.isEmpty) {
+      return _defaultVideoControlUrl;
+    }
+    return value.replaceFirst(RegExp(r'/+$'), '');
+  }
 
   String _normalizedHost() {
     final host = _streamHostController.text.trim();
@@ -305,12 +336,205 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   }
 
   void _retryStream() {
+    if (!_videoPlaybackEnabled && !_videoCommandBusy) {
+      unawaited(_startVideoPush());
+      return;
+    }
     setState(() {
       _streamReloadToken += 1;
       _streamState = StreamPlaybackState.loading;
       _streamStatusMessage = '正在手动重连视频流';
     });
     _pushEvent('重连视频流');
+  }
+
+  Future<void> _startVideoPush() async {
+    if (_videoCommandBusy) {
+      return;
+    }
+
+    setState(() {
+      _videoCommandBusy = true;
+      _videoPlaybackEnabled = false;
+      _streamState = StreamPlaybackState.loading;
+      _streamStatusMessage = '正在请求云端启动视频推流';
+    });
+    _pushEvent('请求启动云端视频');
+
+    try {
+      await _videoControl.start(
+        baseUrl: _videoControlUrl,
+        vehicleId: _videoVehicleId,
+        viewerId: _videoViewerId,
+        ttlSec: _videoLeaseSec,
+      );
+      final running = await _waitForVideoRunning();
+      if (!running) {
+        throw StateError('视频推流启动超时');
+      }
+      _startVideoRenewTimer();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _videoPlaybackEnabled = true;
+        _streamReloadToken += 1;
+        _streamState = StreamPlaybackState.loading;
+        _streamStatusMessage = '正在打开云端视频流';
+      });
+      _pushEvent('云端视频推流已启动');
+    } catch (error) {
+      _videoRenewTimer?.cancel();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _videoPlaybackEnabled = false;
+        _streamState = StreamPlaybackState.error;
+        _streamStatusMessage = error.toString();
+      });
+      _pushEvent('启动视频失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _videoCommandBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _stopVideoPush() async {
+    if (_videoCommandBusy) {
+      return;
+    }
+
+    _videoRenewTimer?.cancel();
+    setState(() {
+      _videoCommandBusy = true;
+      _videoPlaybackEnabled = false;
+      _streamState = StreamPlaybackState.stopped;
+      _streamStatusMessage = '正在停止视频推流';
+    });
+    _pushEvent('请求停止云端视频');
+
+    try {
+      await _videoControl.stop(
+        baseUrl: _videoControlUrl,
+        vehicleId: _videoVehicleId,
+        viewerId: _videoViewerId,
+      );
+      await _refreshVideoCloudStatus();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _streamState = StreamPlaybackState.stopped;
+        _streamStatusMessage = '视频推流已停止';
+      });
+      _pushEvent('云端视频推流已停止');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _streamState = StreamPlaybackState.error;
+        _streamStatusMessage = error.toString();
+      });
+      _pushEvent('停止视频失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _videoCommandBusy = false;
+        });
+      }
+    }
+  }
+
+  Future<bool> _waitForVideoRunning() async {
+    for (var attempt = 0; attempt < 25; attempt += 1) {
+      final snapshot = await _videoControl.status(
+        baseUrl: _videoControlUrl,
+        vehicleId: _videoVehicleId,
+      );
+      if (!mounted) {
+        return false;
+      }
+      setState(() {
+        _videoCloudState = snapshot.videoState;
+        _streamStatusMessage = snapshot.running
+            ? '视频推流已运行'
+            : '等待车端启动视频推流：${snapshot.videoState}';
+      });
+      if (snapshot.running) {
+        return true;
+      }
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    return false;
+  }
+
+  void _startVideoRenewTimer() {
+    _videoRenewTimer?.cancel();
+    _videoRenewTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      unawaited(_renewVideoLease());
+    });
+  }
+
+  Future<void> _renewVideoLease() async {
+    try {
+      final snapshot = await _videoControl.renew(
+        baseUrl: _videoControlUrl,
+        vehicleId: _videoVehicleId,
+        viewerId: _videoViewerId,
+        ttlSec: _videoLeaseSec,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _videoCloudState = snapshot.videoState;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _streamStatusMessage = '视频续约失败：$error';
+      });
+      _pushEvent('视频续约失败：$error');
+    }
+  }
+
+  Future<void> _refreshVideoCloudStatus() async {
+    try {
+      final snapshot = await _videoControl.status(
+        baseUrl: _videoControlUrl,
+        vehicleId: _videoVehicleId,
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _videoCloudState = snapshot.videoState;
+        if (!_videoPlaybackEnabled &&
+            !_videoCommandBusy &&
+            _streamState != StreamPlaybackState.error) {
+          _streamState = snapshot.running
+              ? StreamPlaybackState.stopped
+              : StreamPlaybackState.stopped;
+          _streamStatusMessage = snapshot.running
+              ? '视频推流正在运行，点击播放可接入'
+              : '视频推流未启动';
+        }
+      });
+    } catch (_) {
+      if (!mounted || _videoPlaybackEnabled || _videoCommandBusy) {
+        return;
+      }
+      setState(() {
+        _videoCloudState = 'offline';
+      });
+    }
   }
 
   void _handleStreamReady() {
@@ -392,6 +616,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 
   String _streamLabel() {
     switch (_streamState) {
+      case StreamPlaybackState.stopped:
+        return '未启动';
       case StreamPlaybackState.loading:
         return '加载中';
       case StreamPlaybackState.ready:
@@ -403,6 +629,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 
   Color _streamColor() {
     switch (_streamState) {
+      case StreamPlaybackState.stopped:
+        return const Color(0xFF607D8B);
       case StreamPlaybackState.loading:
         return const Color(0xFF1565C0);
       case StreamPlaybackState.ready:
@@ -414,6 +642,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 
   IconData _streamIcon() {
     switch (_streamState) {
+      case StreamPlaybackState.stopped:
+        return Icons.videocam_off;
       case StreamPlaybackState.loading:
         return Icons.sync;
       case StreamPlaybackState.ready:
@@ -452,9 +682,12 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               streamUrl: streamUrl,
               streamReaderUrl: streamReaderUrl,
               streamWhepUrl: streamWhepUrl,
+              playbackEnabled: _videoPlaybackEnabled,
+              videoBusy: _videoCommandBusy,
+              videoCloudState: _videoCloudState,
               muted: _streamMuted,
               streamViewKey: ValueKey(
-                '$streamUrl#$_streamMuted#$_streamReloadToken',
+                '$streamUrl#$_streamMuted#$_streamReloadToken#$_videoPlaybackEnabled',
               ),
               streamState: _streamLabel(),
               streamStatusMessage: _streamStatusMessage,
@@ -462,6 +695,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               streamIcon: _streamIcon(),
               fillAvailable: wideLayout,
               onRetry: _retryStream,
+              onStartVideo: _startVideoPush,
+              onStopVideo: _stopVideoPush,
               onReady: _handleStreamReady,
               onError: _handleStreamError,
             );
@@ -501,9 +736,11 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               controlSnapshot: _controlLinkSnapshot,
               hostController: _streamHostController,
               pathController: _streamPathController,
+              videoControlController: _videoControlController,
               muted: _streamMuted,
               streamUrl: streamUrl,
               streamStatus: _streamLabel(),
+              videoCloudState: _videoCloudState,
               onMutedChanged: (value) {
                 setState(() {
                   _streamMuted = value;
@@ -756,6 +993,9 @@ class _LiveVideoPanel extends StatelessWidget {
     required this.streamUrl,
     required this.streamReaderUrl,
     required this.streamWhepUrl,
+    required this.playbackEnabled,
+    required this.videoBusy,
+    required this.videoCloudState,
     required this.muted,
     required this.streamViewKey,
     required this.streamState,
@@ -764,6 +1004,8 @@ class _LiveVideoPanel extends StatelessWidget {
     required this.streamIcon,
     required this.fillAvailable,
     required this.onRetry,
+    required this.onStartVideo,
+    required this.onStopVideo,
     required this.onReady,
     required this.onError,
   });
@@ -771,6 +1013,9 @@ class _LiveVideoPanel extends StatelessWidget {
   final String streamUrl;
   final String streamReaderUrl;
   final String streamWhepUrl;
+  final bool playbackEnabled;
+  final bool videoBusy;
+  final String videoCloudState;
   final bool muted;
   final Key streamViewKey;
   final String streamState;
@@ -779,6 +1024,8 @@ class _LiveVideoPanel extends StatelessWidget {
   final IconData streamIcon;
   final bool fillAvailable;
   final VoidCallback onRetry;
+  final VoidCallback onStartVideo;
+  final VoidCallback onStopVideo;
   final VoidCallback onReady;
   final ValueChanged<String> onError;
 
@@ -789,6 +1036,7 @@ class _LiveVideoPanel extends StatelessWidget {
       streamUrl: streamUrl,
       streamReaderUrl: streamReaderUrl,
       streamWhepUrl: streamWhepUrl,
+      playbackEnabled: playbackEnabled,
       muted: muted,
       streamViewKey: streamViewKey,
       onReady: onReady,
@@ -801,18 +1049,33 @@ class _LiveVideoPanel extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              crossAxisAlignment: WrapCrossAlignment.center,
               children: [
                 Icon(Icons.videocam, color: theme.colorScheme.primary),
-                const SizedBox(width: 8),
                 Text('实时视频', style: theme.textTheme.titleMedium),
-                const SizedBox(width: 10),
                 _InlineState(
                   icon: streamIcon,
                   value: streamState,
                   color: streamColor,
                 ),
-                const Spacer(),
+                _InlineState(
+                  icon: Icons.cloud,
+                  value: videoCloudState,
+                  color: streamColor,
+                ),
+                IconButton.filledTonal(
+                  onPressed: videoBusy || playbackEnabled ? null : onStartVideo,
+                  icon: const Icon(Icons.play_arrow),
+                  tooltip: '启动视频推流',
+                ),
+                IconButton.filledTonal(
+                  onPressed: videoBusy || !playbackEnabled ? null : onStopVideo,
+                  icon: const Icon(Icons.stop),
+                  tooltip: '停止视频推流',
+                ),
                 IconButton.filledTonal(
                   onPressed: onRetry,
                   icon: const Icon(Icons.refresh),
@@ -851,6 +1114,7 @@ class _VideoFrame extends StatelessWidget {
     required this.streamUrl,
     required this.streamReaderUrl,
     required this.streamWhepUrl,
+    required this.playbackEnabled,
     required this.muted,
     required this.streamViewKey,
     required this.onReady,
@@ -860,6 +1124,7 @@ class _VideoFrame extends StatelessWidget {
   final String streamUrl;
   final String streamReaderUrl;
   final String streamWhepUrl;
+  final bool playbackEnabled;
   final bool muted;
   final Key streamViewKey;
   final VoidCallback onReady;
@@ -871,16 +1136,18 @@ class _VideoFrame extends StatelessWidget {
       borderRadius: BorderRadius.circular(8),
       child: ColoredBox(
         color: Colors.black,
-        child: OpenRdStreamView(
-          key: streamViewKey,
-          url: streamUrl,
-          readerUrl: streamReaderUrl,
-          whepUrl: streamWhepUrl,
-          muted: muted,
-          onReady: onReady,
-          onError: onError,
-          placeholder: _StreamFallback(url: streamUrl),
-        ),
+        child: playbackEnabled
+            ? OpenRdStreamView(
+                key: streamViewKey,
+                url: streamUrl,
+                readerUrl: streamReaderUrl,
+                whepUrl: streamWhepUrl,
+                muted: muted,
+                onReady: onReady,
+                onError: onError,
+                placeholder: _StreamFallback(url: streamUrl),
+              )
+            : _StreamFallback(url: streamUrl, message: '视频推流未启动'),
       ),
     );
   }
@@ -1555,9 +1822,11 @@ class _DebugPanel extends StatelessWidget {
     required this.controlSnapshot,
     required this.hostController,
     required this.pathController,
+    required this.videoControlController,
     required this.muted,
     required this.streamUrl,
     required this.streamStatus,
+    required this.videoCloudState,
     required this.onMutedChanged,
     required this.onStreamConfigChanged,
   });
@@ -1567,9 +1836,11 @@ class _DebugPanel extends StatelessWidget {
   final ControlLinkSnapshot controlSnapshot;
   final TextEditingController hostController;
   final TextEditingController pathController;
+  final TextEditingController videoControlController;
   final bool muted;
   final String streamUrl;
   final String streamStatus;
+  final String videoCloudState;
   final ValueChanged<bool> onMutedChanged;
   final VoidCallback onStreamConfigChanged;
 
@@ -1675,11 +1946,19 @@ class _DebugPanel extends StatelessWidget {
                   onChanged: (_) => onStreamConfigChanged(),
                 ),
               ),
+              SizedBox(
+                width: 250,
+                child: TextField(
+                  controller: videoControlController,
+                  decoration: const InputDecoration(labelText: 'Cloud API'),
+                ),
+              ),
               FilterChip(
                 label: const Text('静音'),
                 selected: muted,
                 onSelected: onMutedChanged,
               ),
+              _SmallInfo(label: '云端', value: videoCloudState),
             ],
           ),
           const SizedBox(height: 12),
@@ -1895,9 +2174,10 @@ class _SurfacePanel extends StatelessWidget {
 }
 
 class _StreamFallback extends StatelessWidget {
-  const _StreamFallback({required this.url});
+  const _StreamFallback({required this.url, this.message = '视频预览加载中'});
 
   final String url;
+  final String message;
 
   @override
   Widget build(BuildContext context) {
@@ -1906,7 +2186,7 @@ class _StreamFallback extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       child: Center(
         child: Text(
-          '视频预览加载中\n$url',
+          '$message\n$url',
           textAlign: TextAlign.center,
           style: Theme.of(
             context,

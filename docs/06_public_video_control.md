@@ -218,12 +218,64 @@ unknown
 
 ### 云端到车端 agent
 
-建议使用车端主动发起的 WebSocket 长连接。MQTT 也可行，但短期 WebSocket 更直接，便于和现有 Web 技术栈对齐。
+长期建议使用车端主动发起的 WebSocket 长连接。MQTT 也可行，但 WebSocket 更直接，便于和现有 Web 技术栈对齐。
 
-连接方向：
+Phase 1 实际实现采用无第三方依赖的 HTTP polling：RK3588 agent 主动 `POST /api/agent/poll`，云端在响应里返回待执行命令。这样可以在当前 RK3588 环境没有 `pip3`、没有 `aiohttp/websockets` 的情况下先跑通公网按需启停闭环，同时保持“车端主动出站、前端只访问云端”的架构边界。后续可把 polling 通道替换为 WebSocket，而不改变前端 HTTP API。
+
+当前腾讯云服务器上的 control service 监听 `0.0.0.0:8790`，公网入口为：
+
+```text
+http://43.139.25.165:8790
+```
+
+服务器上的 Caddy 还保留了一个备用反代入口：`http://43.139.25.165:8080/openrd-control`。
+
+目标连接方向：
 
 ```text
 RK3588 openrd-video-agent -> 云端 control service
+```
+
+Phase 1 polling 接口：
+
+```text
+POST /api/agent/poll
+```
+
+agent 请求体携带车辆状态和上一条命令执行结果：
+
+```json
+{
+  "vehicle_id": "openrd-001",
+  "agent": "openrd-video-agent",
+  "version": "0.1",
+  "wait_sec": 20,
+  "status": {
+    "state": "stopped",
+    "service_active": false,
+    "runtime_running": false
+  },
+  "result": {
+    "request_id": "req-001",
+    "command": "video.start",
+    "ok": true,
+    "state": "running"
+  }
+}
+```
+
+云端响应：
+
+```json
+{
+  "ok": true,
+  "command": {
+    "request_id": "req-002",
+    "type": "video.start",
+    "lease_sec": 120
+  },
+  "lease_expires_in_sec": 120
+}
 ```
 
 agent 上线后发送：
@@ -376,7 +428,7 @@ stop wait timeout:       5s
 ### Phase 1：最小公网按需启停闭环
 
 - 在云服务器增加最小 control service；
-- RK3588 增加 `openrd-video-agent`，主动 WebSocket 连接云端；
+- RK3588 增加 `openrd-video-agent`，Phase 1 通过 HTTP polling 主动连接云端，后续可替换为 WebSocket；
 - 支持 `status/start/stop` 三个命令；
 - 前端增加“启动视频 / 停止视频”按钮；
 - 前端启动后播放现有 HTTP-FLV；

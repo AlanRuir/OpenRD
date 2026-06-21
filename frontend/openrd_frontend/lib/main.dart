@@ -45,6 +45,9 @@ class ControlDashboardPage extends StatefulWidget {
 }
 
 class _ControlDashboardPageState extends State<ControlDashboardPage> {
+  static const String _defaultStreamHost = '43.139.25.165';
+  static const String _defaultStreamPath = 'live/openrd';
+
   DriveCommand _lastCommand = DriveCommand.stop;
   final TextEditingController _controlEndpointController =
       TextEditingController(text: 'http://192.168.100.114');
@@ -71,10 +74,10 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   StreamSubscription<GamepadSnapshot>? _gamepadSubscription;
   GamepadSnapshot _gamepadSnapshot = GamepadSnapshot.disconnected();
   final TextEditingController _streamHostController = TextEditingController(
-    text: '192.168.100.108',
+    text: _defaultStreamHost,
   );
   final TextEditingController _streamPathController = TextEditingController(
-    text: 'live',
+    text: _defaultStreamPath,
   );
   final List<String> _eventLog = <String>['OpenRD 控制台已启动'];
 
@@ -109,60 +112,59 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 
   String get _streamUrl {
     final host = _normalizedHost();
-    final pathSegments = _pathSegments();
+    final pathSegments = _streamPlaybackPathSegments();
     return Uri(
       scheme: 'http',
       host: host,
-      port: 8889,
-      pathSegments: <String>[...pathSegments, ''],
+      port: 8888,
+      pathSegments: pathSegments,
     ).toString();
   }
 
-  String get _streamReaderUrl {
-    final host = _normalizedHost();
-    final pathSegments = _pathSegments();
-    return Uri(
-      scheme: 'http',
-      host: host,
-      port: 8889,
-      pathSegments: <String>[...pathSegments, 'reader.js'],
-    ).toString();
-  }
+  String get _streamReaderUrl => '';
 
-  String get _streamWhepUrl {
-    final host = _normalizedHost();
-    final pathSegments = _pathSegments();
-    return Uri(
-      scheme: 'http',
-      host: host,
-      port: 8889,
-      pathSegments: <String>[...pathSegments, 'whep'],
-    ).toString();
-  }
+  String get _streamWhepUrl => '';
 
   String _normalizedHost() {
     final host = _streamHostController.text.trim();
     if (host.isEmpty) {
-      return '192.168.100.108';
+      return _defaultStreamHost;
     }
 
-    return host.replaceFirst(RegExp(r'^https?://'), '');
+    return host
+        .replaceFirst(RegExp(r'^https?://'), '')
+        .split('/')
+        .first
+        .replaceFirst(RegExp(r':\d+$'), '');
   }
 
   String _normalizedPath() {
     final path = _streamPathController.text.trim();
     if (path.isEmpty) {
-      return 'live';
+      return _defaultStreamPath;
     }
 
     return path.startsWith('/') ? path.substring(1) : path;
   }
 
-  List<String> _pathSegments() {
-    return _normalizedPath()
+  List<String> _streamPlaybackPathSegments() {
+    final pathSegments = _normalizedPath()
         .split('/')
         .where((segment) => segment.isNotEmpty)
         .toList();
+    if (pathSegments.isEmpty) {
+      return <String>['live', 'openrd.live.flv'];
+    }
+
+    final last = pathSegments.last;
+    if (last.endsWith('.live.flv')) {
+      return pathSegments;
+    }
+
+    return <String>[
+      ...pathSegments.take(pathSegments.length - 1),
+      '$last.live.flv',
+    ];
   }
 
   void _pushEvent(String message) {
@@ -1661,7 +1663,7 @@ class _DebugPanel extends StatelessWidget {
                 width: 180,
                 child: TextField(
                   controller: hostController,
-                  decoration: const InputDecoration(labelText: 'RK IP'),
+                  decoration: const InputDecoration(labelText: 'ZLM Host'),
                   onChanged: (_) => onStreamConfigChanged(),
                 ),
               ),

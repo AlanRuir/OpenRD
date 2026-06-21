@@ -50,6 +50,7 @@ ESP32 / OpenRD-Driver
 - 前进、后退、左转、右转、停止已能通过手柄控制；
 - 前端有速度上限滑块，建议首次实车测试使用 `200` 或 `300`；
 - 前端会每 3 秒刷新 OpenRD-Driver `/status`，每 30 秒触发一次 `/read_vol`，并按 12V/3S 电池估算电量显示；
+- 前端视频默认播放云端 ZLMediaKit HTTP-FLV：`http://43.139.25.165:8888/live/openrd.live.flv`；
 - OpenRD-Driver 已修复浏览器 CORS，`/control` 不再返回重复的 `Access-Control-Allow-Origin`。
 
 当前前端静态调试方式：
@@ -64,6 +65,18 @@ python -m http.server 8791 --bind 127.0.0.1 -d build\web
 
 ```text
 http://127.0.0.1:8791/
+```
+
+不需要看实时视频时，可以停止 RK3588 板端推流，避免消耗公网流量：
+
+```powershell
+ssh linaro@192.168.100.108 "sudo systemctl stop openrd-video-native.service"
+```
+
+需要恢复视频时再启动：
+
+```powershell
+ssh linaro@192.168.100.108 "sudo systemctl start openrd-video-native.service"
 ```
 
 ## MVP 目标
@@ -115,6 +128,7 @@ MVP 成功标准：
 - 保留软件解码回退路径，可通过 `OPENRD_VIDEO_MJPEG_DECODER=software` 或 `--mjpeg-decoder software` 切换到 `jpegdec`/`videoconvert`；
 - 公网 RTSP 播放地址：`rtsp://43.139.25.165/live/openrd`；
 - 公网 HTTP-FLV 播放地址：`http://43.139.25.165:8888/live/openrd.live.flv`；
+- Flutter 前端当前默认使用公网 HTTP-FLV 播放地址；
 - 本机 MediaMTX 保留为局域网回退调试路径：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
 - `openrd-video-native.service` 启用 systemd 开机自启动；`mediamtx.service` 可作为局域网回退服务保留；
 - CSI/IMX415 链路保留为可选调试路径，不再作为默认视频输入；

@@ -32,28 +32,21 @@ class OpenRdStreamView extends StatefulWidget {
 }
 
 class _OpenRdStreamViewState extends State<OpenRdStreamView> {
-  static const String _playerVersion = 'openrd-player-16x9-v3';
+  static const String _playerVersion = 'openrd-flv-player-v1';
+  static const String _mpegtsCdn =
+      'https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js';
   static const String _messageSource = 'openrd-stream-player';
   static final Set<String> _registeredViewTypes = <String>{};
   static final Map<String, _StreamCallbacks> _callbacksByViewType =
       <String, _StreamCallbacks>{};
 
-  late final String _viewType = _buildViewType(
-    widget.readerUrl,
-    widget.whepUrl,
-    widget.muted,
-  );
+  late final String _viewType = _buildViewType(widget.url, widget.muted);
   StreamSubscription<html.MessageEvent>? _messageSubscription;
 
   @override
   void initState() {
     super.initState();
-    _registerViewType(
-      _viewType,
-      readerUrl: widget.readerUrl,
-      whepUrl: widget.whepUrl,
-      muted: widget.muted,
-    );
+    _registerViewType(_viewType, url: widget.url, muted: widget.muted);
     _callbacksByViewType[_viewType] = _StreamCallbacks(
       onReady: widget.onReady,
       onError: widget.onError,
@@ -77,8 +70,8 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
     super.dispose();
   }
 
-  String _buildViewType(String readerUrl, String whepUrl, bool muted) {
-    final key = '$_playerVersion|$readerUrl|$whepUrl|$muted';
+  String _buildViewType(String url, bool muted) {
+    final key = '$_playerVersion|$url|$muted';
     final sanitized = key.replaceAll(RegExp(r'[^a-zA-Z0-9]+'), '_');
     final hash = key.hashCode.toUnsigned(32).toRadixString(16);
     return 'openrd_stream_${sanitized}_$hash';
@@ -111,15 +104,16 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
       case 'error':
         final message = parsed['message'];
         callbacks?.onError?.call(
-          message is String && message.isNotEmpty ? message : '视频流加载失败',
+          message is String && message.isNotEmpty
+              ? message
+              : 'Video stream failed',
         );
     }
   }
 
   void _registerViewType(
     String viewType, {
-    required String readerUrl,
-    required String whepUrl,
+    required String url,
     required bool muted,
   }) {
     if (_registeredViewTypes.contains(viewType)) {
@@ -130,8 +124,7 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
       final iframe = html.IFrameElement()
         ..srcdoc = _buildPlayerDocument(
           viewType: viewType,
-          readerUrl: readerUrl,
-          whepUrl: whepUrl,
+          url: url,
           muted: muted,
         )
         ..style.border = '0'
@@ -142,7 +135,7 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
         ..setAttribute('scrolling', 'no');
 
       iframe.onError.listen((_) {
-        _callbacksByViewType[viewType]?.onError?.call('视频流加载失败');
+        _callbacksByViewType[viewType]?.onError?.call('Video stream failed');
       });
 
       return iframe;
@@ -151,12 +144,10 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
 
   String _buildPlayerDocument({
     required String viewType,
-    required String readerUrl,
-    required String whepUrl,
+    required String url,
     required bool muted,
   }) {
-    final escapedReaderUrl = _escapeHtml(readerUrl);
-    final escapedWhepUrl = _escapeJs(whepUrl);
+    final escapedUrl = _escapeJs(url);
     final escapedViewType = _escapeJs(viewType);
     final mutedLiteral = muted ? 'true' : 'false';
 
@@ -202,7 +193,7 @@ body {
   text-shadow: 0 0 5px black;
 }
 </style>
-<script defer src="$escapedReaderUrl"></script>
+<script defer src="$_mpegtsCdn"></script>
 </head>
 <body>
 <!-- $_playerVersion -->
@@ -212,20 +203,21 @@ body {
 window.addEventListener('load', () => {
   const video = document.getElementById('video');
   const message = document.getElementById('message');
-  let reader = null;
+  let player = null;
   let readySent = false;
+  let errorSent = false;
 
   const setMessage = (text) => {
     message.textContent = text;
     message.style.display = text ? 'flex' : 'none';
   };
 
-  const notify = (event, message = '') => {
+  const notify = (event, text = '') => {
     window.parent.postMessage(JSON.stringify({
       source: '$_messageSource',
       viewType: '$escapedViewType',
       event,
-      message,
+      message: text,
     }), '*');
   };
 
@@ -234,40 +226,74 @@ window.addEventListener('load', () => {
       return;
     }
     readySent = true;
+    setMessage('');
     notify('ready');
   };
 
   const notifyError = (err) => {
+    if (errorSent) {
+      return;
+    }
+    errorSent = true;
     const text = err && err.message ? err.message : String(err || 'Video stream failed');
     setMessage(text);
     notify('error', text);
   };
 
+  const destroyPlayer = () => {
+    if (player === null) {
+      return;
+    }
+    try {
+      player.destroy();
+    } catch (_) {
+      // Ignore teardown errors from partially initialized players.
+    }
+    player = null;
+  };
+
   video.muted = $mutedLiteral;
   video.addEventListener('playing', notifyReady, { once: true });
+  video.addEventListener('error', () => notifyError(video.error || 'Video element error'));
 
   try {
-    reader = new MediaMTXWebRTCReader({
-      url: '$escapedWhepUrl',
-      onError: notifyError,
-      onTrack: (evt) => {
-        setMessage('');
-        video.srcObject = evt.streams[0];
-        notifyReady();
-      },
-      onDataChannel: (evt) => {
-        evt.channel.binaryType = 'arraybuffer';
-      },
+    if (!window.mpegts || !mpegts.isSupported()) {
+      throw new Error('HTTP-FLV playback is not supported by this browser');
+    }
+
+    player = mpegts.createPlayer({
+      type: 'flv',
+      isLive: true,
+      url: '$escapedUrl',
+    }, {
+      enableWorker: true,
+      enableStashBuffer: false,
+      stashInitialSize: 128,
+      autoCleanupSourceBuffer: true,
+      autoCleanupMaxBackwardDuration: 3,
+      autoCleanupMinBackwardDuration: 1,
+      liveBufferLatencyChasing: true,
+      liveBufferLatencyMaxLatency: 1.5,
+      liveBufferLatencyMinRemain: 0.3,
     });
+
+    player.on(mpegts.Events.ERROR, (type, detail, info) => {
+      const parts = [type, detail].filter(Boolean);
+      const suffix = info && info.msg ? ': ' + info.msg : '';
+      notifyError((parts.join(' / ') || 'Video stream failed') + suffix);
+    });
+    player.attachMediaElement(video);
+    player.load();
+    const playPromise = player.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+      playPromise.catch(notifyError);
+    }
   } catch (err) {
     notifyError(err);
   }
 
-  window.addEventListener('beforeunload', () => {
-    if (reader !== null) {
-      reader.close();
-    }
-  });
+  window.addEventListener('pagehide', destroyPlayer);
+  window.addEventListener('beforeunload', destroyPlayer);
 });
 </script>
 </body>
@@ -275,16 +301,13 @@ window.addEventListener('load', () => {
 ''';
   }
 
-  String _escapeHtml(String value) {
-    return value
-        .replaceAll('&', '&amp;')
-        .replaceAll('"', '&quot;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;');
-  }
-
   String _escapeJs(String value) {
-    return value.replaceAll(r'\', r'\\').replaceAll("'", r"\'");
+    return value
+        .replaceAll(r'\', r'\\')
+        .replaceAll("'", r"\'")
+        .replaceAll('<', r'\x3C')
+        .replaceAll('>', r'\x3E')
+        .replaceAll('&', r'\x26');
   }
 
   @override

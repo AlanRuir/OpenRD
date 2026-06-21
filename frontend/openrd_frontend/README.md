@@ -14,7 +14,7 @@ OpenRD 的 Flutter 前端，当前先做 Web MVP：驾驶控制台 + 实时视�
 - OpenRD-Driver HTTP 直连控制
 - OpenRD-Driver 电池电压/电量显示
 - RK 摄像头实时预览
-- 支持 MediaMTX 的 WebRTC 页面嵌入
+- 支持云端 ZLMediaKit HTTP-FLV 视频播放
 - 折叠式调试区和事件日志
 
 ## 运行方式
@@ -29,13 +29,37 @@ flutter run -d chrome
 
 ## 视频配置
 
-前端视频区需要填写：
+前端视频区默认播放腾讯云 ZLMediaKit 的 HTTP-FLV 公网流：
 
-- `RK IP`：RK3588 板子的 IP
-- `Path`：MediaMTX 的流路径，默认是 `live`
-- `WebRTC`：走 `http://<rk-ip>:8889/<path>`，作为低延迟主链路
+```text
+http://43.139.25.165:8888/live/openrd.live.flv
+```
 
-MediaMTX 官方文档说明浏览器可以直接访问 WebRTC 页面，也支持把它嵌入到外部网站中。
+调试区的视频字段含义：
+
+- `ZLM Host`：ZLMediaKit 服务器地址，默认是 `43.139.25.165`
+- `Path`：ZLMediaKit 流路径，默认是 `live/openrd`
+- 实际播放 URL 会自动拼成 `http://<zlm-host>:8888/<path>.live.flv`
+
+RK3588 板端通过 `openrd-video-native.service` 主动推送 RTMP 到云端：
+
+```text
+rtmp://43.139.25.165:1935/live/openrd
+```
+
+不需要看视频时可以停止板端推流，避免消耗公网流量：
+
+```bash
+ssh linaro@192.168.100.108 "sudo systemctl stop openrd-video-native.service"
+```
+
+需要恢复视频时再启动：
+
+```bash
+ssh linaro@192.168.100.108 "sudo systemctl start openrd-video-native.service"
+```
+
+ZLMediaKit 服务器当前关闭 HLS/MP4 录制，只做直播转发，避免生成切片或录像文件占用磁盘。本机 MediaMTX/WebRTC 链路保留为局域网回退调试方案，但不再是前端默认播放源。
 
 ## 手柄输入
 
@@ -122,5 +146,5 @@ WebSocket mock 仍保留，用于不接车时验证前端控制消息。HTTP 直
 
 ## 注意
 
-- 当前前端优先服务于局域网 MVP。
+- 当前前端默认使用云端 ZLMediaKit 视频流，控制链路仍可直连局域网内的 OpenRD-Driver。
 - 如果浏览器拦截自动播放，先保留 `静音` 选项，再手动点击播放。

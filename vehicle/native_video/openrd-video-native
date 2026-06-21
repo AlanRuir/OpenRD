@@ -37,6 +37,8 @@ BUFFERS=0
 H264_PROFILE=${OPENRD_VIDEO_H264_PROFILE:-baseline}
 H264_HEADER_MODE=${OPENRD_VIDEO_H264_HEADER_MODE:-each-idr}
 RTSP_URL=${OPENRD_VIDEO_RTSP_URL:-rtsp://127.0.0.1:8554/live}
+RTMP_URL=${OPENRD_VIDEO_RTMP_URL:-rtmp://43.139.25.165:1935/live/openrd}
+RTMP_HEALTHCHECK_URL=${OPENRD_VIDEO_RTMP_HEALTHCHECK_URL:-}
 HLS_HEALTHCHECK_URL=${OPENRD_VIDEO_HLS_HEALTHCHECK_URL:-}
 RTSP_PROTOCOLS=${OPENRD_VIDEO_RTSP_PROTOCOLS:-tcp}
 RTSP_LATENCY_MS=${OPENRD_VIDEO_RTSP_LATENCY_MS:-100}
@@ -71,8 +73,8 @@ OpenRD Native Video Runtime v0.1
   pipeline  打印当前参数对应的 gst-launch 命令。
 
 选项:
-  --mode fakesink|file|mpegts|rtp|rtsp
-                           输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX。
+  --mode fakesink|file|mpegts|rtp|rtsp|rtmp
+                           输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX；rtmp 表示推公网 RTMP 中继。
   --device PATH|auto       V4L2 设备；`auto` 会优先选择 UVC 摄像头，仍保留 CSI 节点作为可选回退。
   --input-format nv12|mjpg 摄像头输入格式，默认 mjpg。
   --mjpeg-decoder software|mpp
@@ -84,6 +86,9 @@ OpenRD Native Video Runtime v0.1
   --gop N                  GOP，默认 30。
   --output PATH            file 模式输出路径，默认 /tmp/openrd_camera_test.h264。
   --rtsp-url URL           RTSP 播放/发布地址。rtp 模式下仅用于状态展示；rtsp 模式下作为 publisher 目标。
+  --rtmp-url URL           RTMP publisher 目标，默认腾讯云 ZLMediaKit openrd path。
+  --rtmp-healthcheck-url URL
+                           可选 HTTP-FLV/RTSP 拉流健康检查地址，留空则 rtmp 模式只检查进程存活。
   --rtsp-protocols tcp|udp RTSP publisher 传输方式，默认 tcp。
   --rtsp-latency-ms N      RTSP publisher latency，默认 100。
   --mpegts-host HOST       mpegts 模式下 MediaMTX UDP MPEG-TS 输入地址，默认 127.0.0.1。
@@ -131,6 +136,10 @@ parse_args() {
         OUTPUT=${2:?missing value for --output}; shift 2 ;;
       --rtsp-url)
         RTSP_URL=${2:?missing value for --rtsp-url}; shift 2 ;;
+      --rtmp-url)
+        RTMP_URL=${2:?missing value for --rtmp-url}; shift 2 ;;
+      --rtmp-healthcheck-url)
+        RTMP_HEALTHCHECK_URL=${2:?missing value for --rtmp-healthcheck-url}; shift 2 ;;
       --rtsp-protocols)
         RTSP_PROTOCOLS=${2:?missing value for --rtsp-protocols}; shift 2 ;;
       --rtsp-latency-ms)
@@ -198,7 +207,7 @@ validate_port() {
 
 validate_args() {
   case "$MODE" in
-    fakesink|file|mpegts|rtp|rtsp) ;;
+    fakesink|file|mpegts|rtp|rtsp|rtmp) ;;
     webrtc)
       echo "mode '$MODE' is reserved for later versions" >&2
       exit 2 ;;
@@ -229,6 +238,11 @@ validate_args() {
 
   if [[ "$MODE" == "rtsp" && ! "$RTSP_URL" =~ ^rtsp(s)?:// ]]; then
     echo "rtsp mode requires an rtsp:// or rtsps:// URL: $RTSP_URL" >&2
+    exit 2
+  fi
+
+  if [[ "$MODE" == "rtmp" && ! "$RTMP_URL" =~ ^rtmp(s)?:// ]]; then
+    echo "rtmp mode requires an rtmp:// or rtmps:// URL: $RTMP_URL" >&2
     exit 2
   fi
 
@@ -324,6 +338,18 @@ check_dependencies() {
 
     command -v ffmpeg >/dev/null || command -v ffprobe >/dev/null || {
       echo "ffmpeg or ffprobe not found; install ffmpeg for RTSP runtime health checks" >&2
+      exit 1
+    }
+  fi
+
+  if [[ "$MODE" == "rtmp" ]]; then
+    gst-inspect-1.0 flvmux >/dev/null 2>&1 || {
+      echo "flvmux not found; install GStreamer FLV muxer plugin" >&2
+      exit 1
+    }
+
+    gst-inspect-1.0 rtmpsink >/dev/null 2>&1 || {
+      echo "rtmpsink not found; install GStreamer RTMP sink plugin" >&2
       exit 1
     }
   fi
@@ -591,6 +617,8 @@ build_pipeline() {
       PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! rtph264pay "pt=$RTP_PAYLOAD_TYPE" config-interval=1 "mtu=$RTP_MTU" ! udpsink "host=$RTP_HOST" "port=$RTP_PORT" sync=false async=false) ;;
     rtsp)
       PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! rtspclientsink "location=$RTSP_URL" "protocols=$RTSP_PROTOCOLS" "latency=$RTSP_LATENCY_MS") ;;
+    rtmp)
+      PIPELINE+=(! "video/x-h264,stream-format=avc,alignment=au" ! flvmux streamable=true ! rtmpsink "location=$RTMP_URL live=1") ;;
   esac
 }
 
@@ -645,6 +673,8 @@ DEVICE=$(state_value DEVICE "$DEVICE")
   H264_PROFILE=$(state_value H264_PROFILE "$H264_PROFILE")
   H264_HEADER_MODE=$(state_value H264_HEADER_MODE "$H264_HEADER_MODE")
   RTSP_URL=$(state_value RTSP_URL "$RTSP_URL")
+  RTMP_URL=$(state_value RTMP_URL "$RTMP_URL")
+  RTMP_HEALTHCHECK_URL=$(state_value RTMP_HEALTHCHECK_URL "$RTMP_HEALTHCHECK_URL")
   RTSP_PROTOCOLS=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
   RTSP_LATENCY_MS=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
   MPEGTS_HOST=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
@@ -687,6 +717,8 @@ OUTPUT=$OUTPUT
 H264_PROFILE=$H264_PROFILE
 H264_HEADER_MODE=$H264_HEADER_MODE
 RTSP_URL=$RTSP_URL
+RTMP_URL=$RTMP_URL
+RTMP_HEALTHCHECK_URL=$RTMP_HEALTHCHECK_URL
 RTSP_PROTOCOLS=$RTSP_PROTOCOLS
 RTSP_LATENCY_MS=$RTSP_LATENCY_MS
 MPEGTS_HOST=$MPEGTS_HOST
@@ -723,7 +755,7 @@ status_text() {
   fi
 
   if [[ -f "$STATE_FILE" ]]; then
-    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|INPUT_FORMAT|MJPEG_DECODER|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
+    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|INPUT_FORMAT|MJPEG_DECODER|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTMP_URL|RTMP_HEALTHCHECK_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
   else
     echo "  state_file: missing"
   fi
@@ -745,7 +777,7 @@ status_json() {
     fi
   fi
 
-  local mode device actual_device input_format mjpeg_decoder width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
+  local mode device actual_device input_format mjpeg_decoder width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtmp_url rtmp_healthcheck_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
   mode=$(state_value MODE "$MODE")
   device=$(state_value DEVICE "$DEVICE")
   actual_device=$(state_value ACTUAL_DEVICE "$(actual_device)")
@@ -760,6 +792,8 @@ status_json() {
   h264_profile=$(state_value H264_PROFILE "$H264_PROFILE")
   h264_header_mode=$(state_value H264_HEADER_MODE "$H264_HEADER_MODE")
   rtsp_url=$(state_value RTSP_URL "$RTSP_URL")
+  rtmp_url=$(state_value RTMP_URL "$RTMP_URL")
+  rtmp_healthcheck_url=$(state_value RTMP_HEALTHCHECK_URL "$RTMP_HEALTHCHECK_URL")
   rtsp_protocols=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
   rtsp_latency_ms=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
   mpegts_host=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
@@ -775,7 +809,7 @@ status_json() {
   fi
 
   cat <<EOF
-{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","input_format":"$(json_escape "$input_format")","mjpeg_decoder":"$(json_escape "$mjpeg_decoder")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
+{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","input_format":"$(json_escape "$input_format")","mjpeg_decoder":"$(json_escape "$mjpeg_decoder")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtmp_url":"$(json_escape "$rtmp_url")","rtmp_healthcheck_url":"$(json_escape "$rtmp_healthcheck_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
 EOF
 }
 
@@ -793,7 +827,7 @@ start_runtime() {
 
   build_pipeline
   echo "[$(date -Is)] starting OpenRD native video runtime" >> "$LOG_FILE"
-  echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+  echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
   printf 'pipeline=' >> "$LOG_FILE"
   printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
   printf '\n' >> "$LOG_FILE"
@@ -830,6 +864,21 @@ stream_health_ok() {
       ;;
     rtp)
       return 0
+      ;;
+    rtmp)
+      if [[ -z "$RTMP_HEALTHCHECK_URL" ]]; then
+        return 0
+      fi
+
+      if command -v ffprobe >/dev/null && timeout "${RTSP_HEALTHCHECK_TIMEOUT_SEC}s" ffprobe -v error -analyzeduration 1000000 -probesize 1000000 -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$RTMP_HEALTHCHECK_URL" 2>/dev/null | grep -q .; then
+        return 0
+      fi
+
+      if command -v curl >/dev/null && timeout 8s curl -fsSL --max-time 6 "$RTMP_HEALTHCHECK_URL" >/dev/null 2>&1; then
+        return 0
+      fi
+
+      return 1
       ;;
     *)
       return 0
@@ -940,7 +989,7 @@ supervise_runtime() {
   while true; do
     build_pipeline
     echo "[$(date -Is)] starting OpenRD native video runtime (supervised)" >> "$LOG_FILE"
-    echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+    echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
     printf 'pipeline=' >> "$LOG_FILE"
     printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
     printf '\n' >> "$LOG_FILE"

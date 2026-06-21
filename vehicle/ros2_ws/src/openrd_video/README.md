@@ -32,9 +32,10 @@ RK3588 native Debian
 默认参数：
 
 - `runtime_cli`: `/workspace/OpenRD/vehicle/native_video/openrd-video-systemd`；
-- `mode`: `rtsp`；
-- `device`: `/dev/openrd-cam-front`；
-- `rtsp_url`: `rtsp://127.0.0.1:8554/live`；
+- `mode`: `rtmp`；
+- `device`: `/dev/openrd-cam-uvc`；
+- `rtmp_url`: `rtmp://43.139.25.165:1935/live/openrd`；
+- `rtsp_url`: `rtsp://127.0.0.1:8554/live`，仅用于本机 MediaMTX 回退；
 - `rtsp_protocols`: `tcp`；
 - `rtsp_latency_ms`: `100`。
 
@@ -43,20 +44,22 @@ RK3588 native Debian
 当前长期运行链路：
 
 ```text
-/dev/openrd-cam-front
-  -> v4l2src
+/dev/openrd-cam-uvc
+  -> v4l2src MJPG
+  -> mppjpegdec
   -> mpph264enc
   -> h264parse
-  -> rtspclientsink rtsp://127.0.0.1:8554/live
-  -> MediaMTX live
-  -> RTSP / WebRTC
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> ZLMediaKit live/openrd
+  -> RTSP / HTTP-FLV
 ```
 
 板端默认播放地址：
 
 ```text
-RTSP:   rtsp://192.168.100.108:8554/live
-WebRTC: http://192.168.100.108:8889/live/
+RTSP:     rtsp://43.139.25.165/live/openrd
+HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
 ```
 
 MediaMTX 预留 `live-front`、`live-rear`、`openrd` publisher 路径，但默认服务只运行一路 `live`。

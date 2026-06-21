@@ -13,7 +13,7 @@ RK3588 原生 Debian 环境中已经具备 Rockchip 视频硬件链路：
 - 当前稳定采集节点：两路 `rkisp_mainpath`，设备号可能在 `/dev/video22`、`/dev/video31` 等之间漂移；
 - 推荐固定路径：`/dev/v4l/by-path/platform-rkisp0-vir0-video-index0` 与 `/dev/v4l/by-path/platform-rkisp1-vir0-video-index0`；
 - 推荐别名：`/dev/openrd-cam-front` 与 `/dev/openrd-cam-rear`；
-- 当前默认业务视频设备：`/dev/openrd-cam-front`，也就是当前板端 `/dev/video22` / `rkisp0-vir0`；
+- 当前默认业务视频设备：`/dev/openrd-cam-uvc`，CSI/IMX415 的 `/dev/openrd-cam-front` 与 `/dev/openrd-cam-rear` 保留为调试路径；
 - 硬件相关设备：`/dev/mpp_service`、`/dev/rga`、`/dev/dri`、`/dev/dma_heap`、`/dev/video-enc0`、`/dev/video-dec0`。
 
 这说明视频采集、ISP、RGA、MPP、GStreamer 插件栈已经由原生系统适配好，不应轻易迁移到 Docker 或 Ubuntu chroot 内部。
@@ -147,14 +147,17 @@ vehicle/native_video/openrd-video-systemd
 它运行在 RK3588 原生 Debian 系统上，不进入 Ubuntu chroot。当前默认使用 `gst-launch-1.0` 管理以下链路：
 
 ```text
-/dev/openrd-cam-front
+/dev/openrd-cam-uvc
   -> v4l2src
-  -> video/x-raw,format=NV12,width=1280,height=720,framerate=30/1
+  -> image/jpeg,width=1280,height=720,framerate=30/1
+  -> jpegparse
+  -> mppjpegdec format=NV12
   -> mpph264enc
   -> h264parse
-  -> rtspclientsink rtsp://127.0.0.1:8554/live
-  -> MediaMTX live
-  -> RTSP / WebRTC
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> 腾讯云 ZLMediaKit live/openrd
+  -> RTSP / HTTP-FLV
 ```
 
 当前支持命令：
@@ -169,16 +172,16 @@ vehicle/native_video/openrd-video-systemd
 ./openrd-video-native pipeline
 ```
 
-v0.1 支持 `fakesink`、`file`、legacy `rtp` 和默认 `rtsp` publisher 模式。默认推荐 `rtsp`：GStreamer 直接向本机 MediaMTX 的 `live` 路径发布，控制端可通过 RTSP 或 WebRTC 播放。当前 MediaMTX 已经预留 `live-front` / `live-rear`，但默认仍只运行一路 `live`。
+v0.1 支持 `fakesink`、`file`、legacy `rtp`、本机 `rtsp` publisher 和云端 `rtmp` publisher 模式。当前默认推荐 `rtmp`：GStreamer 主动向腾讯云 ZLMediaKit 的 `live/openrd` 路径发布，控制端可通过公网 RTSP 或 HTTP-FLV 播放。MediaMTX 仍作为局域网回退调试服务保留。
 
-当前板端默认播放地址：
+当前默认公网播放地址：
 
 ```text
-RTSP:   rtsp://192.168.100.108:8554/live
-WebRTC: http://192.168.100.108:8889/live/
+RTSP:     rtsp://43.139.25.165/live/openrd
+HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
 ```
 
-MediaMTX 配置固定为 publisher 模式，并关闭自动枚举 WebRTC ICE 地址，只额外宣告板子的稳定地址 `192.168.100.108`：
+本机 MediaMTX 回退配置固定为 publisher 模式，并关闭自动枚举 WebRTC ICE 地址，只额外宣告板子的稳定地址 `192.168.100.108`：
 
 ```yaml
 webrtcAllowOrigins: ['*']
@@ -211,6 +214,9 @@ ls -lh /tmp/openrd_camera_test.h264
 cd /home/linaro/OpenRD
 OPENRD_BOARD_IP=192.168.100.108 bash tools/rk3588/configure_openrd_mediamtx.sh
 bash tools/rk3588/run_openrd_rtsp_smoke_test.sh
+
+# 验证默认云端 RTMP 链路
+./vehicle/native_video/openrd-video-native pipeline --mode rtmp --rtmp-url rtmp://43.139.25.165:1935/live/openrd
 ```
 
 后续 `openrd_video_node` 通过这个稳定 CLI 管理原生视频 runtime，而不是直接在 chroot 内访问 `mpph264enc`。
@@ -227,11 +233,15 @@ bash tools/rk3588/install_openrd_video_service.sh
 安装脚本会生成 `vehicle/native_video/run/openrd-video-native-service.env`，当前长期运行配置为：
 
 ```text
-OPENRD_VIDEO_MODE=rtsp
-OPENRD_VIDEO_DEVICE=/dev/openrd-cam-front
+OPENRD_VIDEO_MODE=rtmp
+OPENRD_VIDEO_DEVICE=/dev/openrd-cam-uvc
+OPENRD_VIDEO_INPUT_FORMAT=mjpg
+OPENRD_VIDEO_MJPEG_DECODER=mpp
 OPENRD_VIDEO_RTSP_URL=rtsp://127.0.0.1:8554/live
+OPENRD_VIDEO_RTMP_URL=rtmp://43.139.25.165:1935/live/openrd
+OPENRD_VIDEO_RTMP_HEALTHCHECK_URL=
 OPENRD_VIDEO_RTSP_PROTOCOLS=tcp
-OPENRD_VIDEO_HEALTHCHECK_FAILURES=2
+OPENRD_VIDEO_HEALTHCHECK_FAILURES=0
 OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC=8
 OPENRD_VIDEO_HLS_HEALTHCHECK_URL=
 OPENRD_VIDEO_MAX_HEALTH_RESTARTS=1
@@ -241,11 +251,11 @@ OPENRD_VIDEO_MAX_RKAIQ_RESTARTS=1
 OPENRD_VIDEO_FAULT_EXIT_CODE=42
 ```
 
-`openrd-video-native.service`、`mediamtx.service`、`rkaiq_3A.service` 都应保持 `enabled`。板子重启后会自动尝试恢复视频发布；如果 camera/ISP 故障触发 `faulted`，`openrd-video-native.service` 会以退出码 42 停在 failed 状态，避免无限重启：
+`openrd-video-native.service` 应保持 `enabled`。`mediamtx.service` 和 `rkaiq_3A.service` 可按局域网回退或 CSI/IMX415 调试需要保留。板子重启后会自动尝试恢复云端 RTMP 发布；如果 camera/ISP 故障触发 `faulted`，`openrd-video-native.service` 会以退出码 42 停在 failed 状态，避免无限重启：
 
 ```bash
-systemctl is-enabled openrd-video-native.service mediamtx.service rkaiq_3A.service
-systemctl is-active openrd-video-native.service mediamtx.service rkaiq_3A.service
+systemctl is-enabled openrd-video-native.service
+systemctl is-active openrd-video-native.service
 ```
 
 断流排查时注意区分 404 的含义：当浏览器控制台在视频卡住后报 404，通常是 MediaMTX 此时认为 `live` path 暂无可用 publisher，常见日志为 `no stream is available on path 'live'`。这通常是上游 camera/ISP/V4L2 停止吐帧后的结果，不是 WebRTC 页面本身缺文件。

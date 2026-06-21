@@ -149,10 +149,11 @@ openrd_esp32_bridge_node
 - `openrd_video_node` 运行在 Ubuntu 22.04 chroot；
 - `openrd-video-systemd` 负责在 chroot 内调用宿主 `systemctl`；
 - `openrd-video-native.service` 和真正的 GStreamer / MPP 编码进程运行在 RK3588 原生 Debian。
-- `openrd-video-native.service` 默认以 `rtsp` publisher 模式把 `/dev/openrd-cam-rear` 推送到 MediaMTX `live`；
-- `mediamtx.service` 把同一路 `live` 暴露为 `rtsp://192.168.100.108:8554/live` 和 `http://192.168.100.108:8889/live/`；
-- `openrd-video-native.service`、`mediamtx.service`、`rkaiq_3A.service` 均应保持开机自启动；
-- 视频 watchdog 使用真实 RTSP 读帧健康检查，连续失败时先重启视频 runtime，再联动重启 `rkaiq_3A.service`。
+- `openrd-video-native.service` 默认以 `rtmp` publisher 模式把 `/dev/openrd-cam-uvc` 推送到腾讯云 ZLMediaKit `live/openrd`；
+- 公网播放地址为 `rtsp://43.139.25.165/live/openrd` 和 `http://43.139.25.165:8888/live/openrd.live.flv`；
+- `mediamtx.service` 保留为局域网 RTSP/WebRTC 回退服务；
+- `openrd-video-native.service` 应保持开机自启动，`mediamtx.service`、`rkaiq_3A.service` 按回退或 CSI 调试需要保留；
+- 视频 watchdog 默认不做公网拉流健康重启，避免公网抖动触发频繁重启；需要时可通过 `OPENRD_VIDEO_RTMP_HEALTHCHECK_URL` 打开。
 
 不建议职责：
 

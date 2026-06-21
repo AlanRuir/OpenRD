@@ -13,6 +13,8 @@ uint32 bitrate
 uint32 gop
 string output
 string rtsp_url
+string rtmp_url
+string rtmp_healthcheck_url
 string rtsp_protocols
 uint32 rtsp_latency_ms
 string rtp_host

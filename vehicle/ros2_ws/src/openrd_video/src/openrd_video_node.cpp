@@ -44,6 +44,8 @@ struct RuntimeStatus
   uint32_t gop{0};
   std::string output;
   std::string rtsp_url;
+  std::string rtmp_url;
+  std::string rtmp_healthcheck_url;
   std::string rtsp_protocols;
   uint32_t rtsp_latency_ms{0};
   std::string rtp_host;
@@ -258,6 +260,12 @@ RuntimeStatus parse_runtime_status(const std::string & json)
   if (const auto value = extract_json_string(json, "rtsp_url")) {
     status.rtsp_url = *value;
   }
+  if (const auto value = extract_json_string(json, "rtmp_url")) {
+    status.rtmp_url = *value;
+  }
+  if (const auto value = extract_json_string(json, "rtmp_healthcheck_url")) {
+    status.rtmp_healthcheck_url = *value;
+  }
   if (const auto value = extract_json_string(json, "rtsp_protocols")) {
     status.rtsp_protocols = *value;
   }
@@ -301,8 +309,8 @@ public:
       "runtime_log", "/home/linaro/OpenRD/vehicle/native_video/run/openrd-video-native.log");
     auto_start_ = declare_parameter<bool>("auto_start", false);
     poll_hz_ = declare_parameter<double>("poll_hz", 1.0);
-    mode_ = declare_parameter<std::string>("mode", "fakesink");
-    device_ = declare_parameter<std::string>("device", "/dev/openrd-cam-front");
+    mode_ = declare_parameter<std::string>("mode", "rtmp");
+    device_ = declare_parameter<std::string>("device", "/dev/openrd-cam-uvc");
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 720);
     fps_ = declare_parameter<int>("fps", 30);
@@ -310,6 +318,8 @@ public:
     gop_ = declare_parameter<int>("gop", 30);
     output_ = declare_parameter<std::string>("output", "/tmp/openrd_camera_test.h264");
     rtsp_url_ = declare_parameter<std::string>("rtsp_url", "rtsp://127.0.0.1:8554/live");
+    rtmp_url_ = declare_parameter<std::string>("rtmp_url", "rtmp://43.139.25.165:1935/live/openrd");
+    rtmp_healthcheck_url_ = declare_parameter<std::string>("rtmp_healthcheck_url", "");
     rtsp_protocols_ = declare_parameter<std::string>("rtsp_protocols", "tcp");
     rtsp_latency_ms_ = declare_parameter<int>("rtsp_latency_ms", 100);
     rtp_host_ = declare_parameter<std::string>("rtp_host", "127.0.0.1");
@@ -406,6 +416,12 @@ private:
         arguments.emplace_back(output_);
         arguments.emplace_back("--rtsp-url");
         arguments.emplace_back(rtsp_url_);
+        arguments.emplace_back("--rtmp-url");
+        arguments.emplace_back(rtmp_url_);
+        if (!rtmp_healthcheck_url_.empty()) {
+          arguments.emplace_back("--rtmp-healthcheck-url");
+          arguments.emplace_back(rtmp_healthcheck_url_);
+        }
         arguments.emplace_back("--rtsp-protocols");
         arguments.emplace_back(rtsp_protocols_);
         arguments.emplace_back("--rtsp-latency-ms");
@@ -483,6 +499,8 @@ private:
     message.gop = status.gop == 0 ? static_cast<uint32_t>(gop_) : status.gop;
     message.output = status.output.empty() ? output_ : status.output;
     message.rtsp_url = status.rtsp_url.empty() ? rtsp_url_ : status.rtsp_url;
+    message.rtmp_url = status.rtmp_url.empty() ? rtmp_url_ : status.rtmp_url;
+    message.rtmp_healthcheck_url = status.rtmp_healthcheck_url.empty() ? rtmp_healthcheck_url_ : status.rtmp_healthcheck_url;
     message.rtsp_protocols = status.rtsp_protocols.empty() ? rtsp_protocols_ : status.rtsp_protocols;
     message.rtsp_latency_ms = status.rtsp_latency_ms == 0 ? static_cast<uint32_t>(rtsp_latency_ms_) : status.rtsp_latency_ms;
     message.rtp_host = status.rtp_host.empty() ? rtp_host_ : status.rtp_host;
@@ -587,8 +605,8 @@ private:
   std::string runtime_log_;
   bool auto_start_{false};
   double poll_hz_{1.0};
-  std::string mode_{"fakesink"};
-  std::string device_{"/dev/openrd-cam-front"};
+  std::string mode_{"rtmp"};
+  std::string device_{"/dev/openrd-cam-uvc"};
   int width_{1280};
   int height_{720};
   int fps_{30};
@@ -596,6 +614,8 @@ private:
   int gop_{30};
   std::string output_{"/tmp/openrd_camera_test.h264"};
   std::string rtsp_url_{"rtsp://127.0.0.1:8554/live"};
+  std::string rtmp_url_{"rtmp://43.139.25.165:1935/live/openrd"};
+  std::string rtmp_healthcheck_url_;
   std::string rtsp_protocols_{"tcp"};
   int rtsp_latency_ms_{100};
   std::string rtp_host_{"127.0.0.1"};

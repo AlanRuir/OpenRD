@@ -111,11 +111,12 @@ MVP 成功标准：
 
 ### 视频链路
 
-- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTSP publisher 推送到本机 MediaMTX 的 `live` 路径；
+- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTMP publisher 主动推送到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
 - 保留软件解码回退路径，可通过 `OPENRD_VIDEO_MJPEG_DECODER=software` 或 `--mjpeg-decoder software` 切换到 `jpegdec`/`videoconvert`；
-- 局域网 RTSP 调试地址：`rtsp://192.168.100.108:8554/live`；
-- 浏览器 WebRTC 播放地址：`http://192.168.100.108:8889/live/`；
-- `openrd-video-native.service` 与 `mediamtx.service` 均启用 systemd 开机自启动；
+- 公网 RTSP 播放地址：`rtsp://43.139.25.165/live/openrd`；
+- 公网 HTTP-FLV 播放地址：`http://43.139.25.165:8888/live/openrd.live.flv`；
+- 本机 MediaMTX 保留为局域网回退调试路径：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
+- `openrd-video-native.service` 启用 systemd 开机自启动；`mediamtx.service` 可作为局域网回退服务保留；
 - CSI/IMX415 链路保留为可选调试路径，不再作为默认视频输入；
 - 视频 watchdog 使用真实 RTSP 读帧健康检查；当前 UVC 调试阶段默认关闭自动健康重启，避免排查时反复拉起视频链路；
 - 公网阶段：WebRTC + TURN/中继。

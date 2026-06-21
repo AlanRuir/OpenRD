@@ -220,24 +220,26 @@ v0.1 控制链路：
 当前 v0.1 默认视频链路：
 
 ```text
-ATK-IMX415
-  -> RK3588 camera / ISP / V4L2
-  -> GStreamer v4l2src
+/dev/openrd-cam-uvc
+  -> RK3588 V4L2
+  -> GStreamer v4l2src MJPG
+  -> mppjpegdec
   -> mpph264enc
   -> h264parse
-  -> rtspclientsink rtsp://127.0.0.1:8554/live
-  -> MediaMTX live
-  -> RTSP:   rtsp://192.168.100.108:8554/live
-  -> WebRTC: http://192.168.100.108:8889/live/
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> ZLMediaKit live/openrd
+  -> RTSP:     rtsp://43.139.25.165/live/openrd
+  -> HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
   -> Flutter Web / App / browser
 ```
 
 说明：
 
-- RTSP publisher 是车端 service 到 MediaMTX 的默认链路；
-- WebRTC 是当前浏览器播放入口，MediaMTX 从同一路 `live` 转发；
-- `openrd-video-native.service`、`mediamtx.service`、`rkaiq_3A.service` 均开机自启动；
-- `openrd-video-native` 使用真实 RTSP 读帧健康检查，断流后自动重启 runtime，连续失败时重启 `rkaiq_3A.service`；
+- RTMP publisher 是车端 service 到腾讯云 ZLMediaKit 的默认链路；
+- 本机 MediaMTX 保留为局域网 RTSP/WebRTC 回退调试链路；
+- `openrd-video-native.service` 开机自启动，`mediamtx.service` 和 `rkaiq_3A.service` 按回退或 CSI 调试需要保留；
+- `openrd-video-native` 默认关闭公网拉流健康重启，避免公网抖动导致频繁重启；需要时可通过 `OPENRD_VIDEO_RTMP_HEALTHCHECK_URL` 打开；
 - 不建议为了“统一”而把低延迟驾驶视频强制改成 ROS2 `sensor_msgs/Image` 主链路；
 - `openrd_video` 可以作为视频进程管理、状态上报、参数管理节点，而不是必须承载每一帧图像；
 - RK3588 上的硬件视频进程运行在原生 Debian，ROS2 chroot 通过 `openrd-video-systemd` 管理宿主 `openrd-video-native.service`。

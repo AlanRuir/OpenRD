@@ -14,12 +14,12 @@
 - `mount_openrd_chroot.sh`：挂载 `/dev`、`/proc`、`/sys`、`/run` 和项目目录；
 - `enter_openrd_chroot.sh`：进入 chroot，并自动 source ROS2/OpenRD 环境；
 - `build_openrd_ros2_ws.sh`：在 chroot 内构建 `vehicle/ros2_ws`；
-- `install_openrd_video_service.sh`：在宿主 Debian 安装原生视频 systemd 服务、默认 RTSP publisher 参数、断流 watchdog 和最小 sudoers 权限；
+- `install_openrd_video_service.sh`：在宿主 Debian 安装原生视频 systemd 服务、默认云端 RTMP publisher 参数、断流 watchdog 和最小 sudoers 权限；
 - `configure_openrd_mediamtx.sh`：把 MediaMTX 固化为 `live` / `live-front` / `live-rear` / `openrd` publisher 路径，关闭 WebRTC 接口地址自动枚举，并宣告稳定板端地址；
 - `run_openrd_ros2_smoke_test.sh`：启动 launch，发布测试控制命令，观察 ESP32 dry-run 状态。
 - `run_openrd_video_smoke_test.sh`：启动 launch，通过 ROS2 service 验证原生视频 runtime 启停。
 - `run_openrd_rtp_smoke_test.sh`：legacy RTP 冒烟测试，使用 `live-rtp`，不覆盖默认 `live` publisher 链路。
-- `run_openrd_rtsp_smoke_test.sh`：启动默认 `rtsp` publisher 模式，验证 RTSP/HLS/WebRTC 全链路。
+- `run_openrd_rtsp_smoke_test.sh`：启动本机 `rtsp` publisher 模式，验证局域网 RTSP/HLS/WebRTC 回退链路。
 - `start_openrd_cloud_rtmp.sh`：从 RK3588 摄像头直接推 RTMP 到腾讯云 ZLMediaKit，默认地址 `rtmp://43.139.25.165:1935/live/openrd`。
 - `monitor_openrd_video_chain.sh`：长期监测视频链路，分层记录 service、RTSP 读帧、WebRTC HTTP、MediaMTX journal 和 RK camera/ISP kernel 日志。
 - `monitor_openrd_resource_usage.sh`：默认 20 分钟采样 CPU、内存、温度、CPU 频率、devfreq、MPP session、视频进程 CPU/MEM、RTSP/WebRTC 健康状态，用于比较 `jpegdec` 与 `mppjpegdec` 链路资源占用。
@@ -35,9 +35,10 @@
   -> mppjpegdec format=NV12
   -> mpph264enc
   -> h264parse
-  -> rtspclientsink rtsp://127.0.0.1:8554/live
-  -> MediaMTX
-  -> RTSP/WebRTC
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> 腾讯云 ZLMediaKit
+  -> RTSP/HTTP-FLV
 ```
 
 软件解码回退链路：
@@ -49,21 +50,29 @@
   -> videoconvert NV12
   -> mpph264enc
   -> h264parse
-  -> rtspclientsink rtsp://127.0.0.1:8554/live
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
 ```
 
 回退方式：设置 `OPENRD_VIDEO_MJPEG_DECODER=software`，或手动运行 `openrd-video-native test --mjpeg-decoder software` / `openrd-video-native start --mjpeg-decoder software`。
 
-默认板端地址：
+默认公网播放地址：
+
+```text
+RTSP:     rtsp://43.139.25.165/live/openrd
+HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
+```
+
+本机 MediaMTX 仍保留为局域网回退链路：
 
 ```text
 RTSP:   rtsp://192.168.100.108:8554/live
 WebRTC: http://192.168.100.108:8889/live/
 ```
 
-## 公网 RTMP 推流
+## 手动公网 RTMP 推流
 
-在 RK3588 上启动到腾讯云 ZLMediaKit 的公网推流：
+`openrd-video-native.service` 默认已经推腾讯云。需要临时绕开 systemd 验证时，可以在 RK3588 上启动手动推流：
 
 ```bash
 cd /home/linaro/OpenRD
@@ -128,12 +137,14 @@ DURATION_SEC=60 INTERVAL_SEC=5 ./monitor_openrd_resource_usage.sh
 OPENRD_BOARD_IP=192.168.100.108 bash tools/rk3588/configure_openrd_mediamtx.sh
 ```
 
-安装后确认开机自启动：
+安装后确认默认云端推流服务：
 
 ```bash
-systemctl is-enabled openrd-video-native.service mediamtx.service
-systemctl is-active openrd-video-native.service mediamtx.service
+systemctl is-enabled openrd-video-native.service
+systemctl is-active openrd-video-native.service
 ```
+
+`mediamtx.service` 可作为局域网回退服务保留，不再是默认云端推流链路的前置依赖。
 
 ## 长时间监测实验
 

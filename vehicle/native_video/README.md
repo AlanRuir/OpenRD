@@ -23,8 +23,8 @@ v0.1 支持：
 - `fakesink` 模式做链路验证；
 - `file` 模式保存 H.264 裸流；
 - legacy `rtp` 模式把 H.264 封装为 RTP/UDP 发给本机 MediaMTX 的独立路径；
-- 默认 `rtsp` publisher 模式，直接发布到本机 MediaMTX 的 `live` 路径；
-- 通过 MediaMTX 对外提供 `rtsp://<板子IP>:8554/live` 和 `http://<板子IP>:8889/live/` 播放地址；
+- 默认 `rtmp` publisher 模式，直接发布到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
+- 保留本机 MediaMTX `rtsp` publisher 模式作为局域网回退链路；
 - 后台启动、停止、重启、状态查询；
 - 后台监督运行，RTSP 模式下必须实际读到视频帧才判定健康；
 - 检测到断流后做有限自恢复，仍失败时进入 `faulted`，等待人工处理；
@@ -58,15 +58,20 @@ sleep 10
 ./openrd-video-native stop
 ls -lh /tmp/openrd_camera_test.h264
 
-# 推 RTSP 给 MediaMTX，再从 RTSP/WebRTC 播放
+# 推 RTMP 给腾讯云 ZLMediaKit，再从公网 RTSP/HTTP-FLV 播放
+./openrd-video-native start --mode rtmp --rtmp-url rtmp://43.139.25.165:1935/live/openrd
+ffprobe -rtsp_transport tcp rtsp://43.139.25.165/live/openrd
+./openrd-video-native stop
+
+# 回退：推 RTSP 给本机 MediaMTX，再从局域网 RTSP/WebRTC 播放
 ./openrd-video-native start --mode rtsp --rtsp-url rtsp://127.0.0.1:8554/live
 ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/live
 ./openrd-video-native stop
 
-# USB UVC 摄像头示例：默认 MJPG 输入，仍然推 RTSP 给 MediaMTX
+# USB UVC 摄像头示例：默认 MJPG 输入，推云端 RTMP
 v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 ./openrd-video-native test --device /dev/openrd-cam-uvc --input-format mjpg
-./openrd-video-native start --mode rtsp --device /dev/openrd-cam-uvc --input-format mjpg --rtsp-url rtsp://127.0.0.1:8554/live
+./openrd-video-native start --mode rtmp --device /dev/openrd-cam-uvc --input-format mjpg --rtmp-url rtmp://43.139.25.165:1935/live/openrd
 ./openrd-video-native stop
 
 # 使用 RK3588 MPP JPEG 硬解 MJPG 输入
@@ -89,9 +94,10 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 - 编码器：`mpph264enc`；
 - 码率：`2000000` bps；
 - GOP：`30`；
-- 默认发布 URL：`rtsp://127.0.0.1:8554/live`；
-- 板外 RTSP 播放 URL：`rtsp://192.168.100.108:8554/live`；
-- 板外 WebRTC 播放 URL：`http://192.168.100.108:8889/live/`；
+- 默认发布 URL：`rtmp://43.139.25.165:1935/live/openrd`；
+- 公网 RTSP 播放 URL：`rtsp://43.139.25.165/live/openrd`；
+- 公网 HTTP-FLV 播放 URL：`http://43.139.25.165:8888/live/openrd.live.flv`；
+- 局域网回退播放 URL：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
 - RTSP 健康检查：每轮必须用 `ffmpeg`/`ffprobe` 实际读到视频帧，默认不再用 HLS playlist 作为健康信号；
 - 默认恢复上限：当前 UVC 调试阶段关闭自动健康重启；CSI 调试时可按需要打开视频 runtime 与 `rkaiq_3A.service` 的有限恢复；
 - 默认故障退出码：`42`，systemd 通过 `RestartPreventExitStatus=42` 停止自动重启；
@@ -100,18 +106,18 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 
 ## RTSP 播放路径
 
-当前推荐路径是让 GStreamer 作为 RTSP publisher 发布到 MediaMTX。当前默认仍然只推一路 `live`，但 MediaMTX 已经预留 `live-front` 与 `live-rear` 两个路径，后续可在不改命名约定的前提下扩成双路：
+当前推荐路径是让 GStreamer 作为 RTMP publisher 主动推送到腾讯云 ZLMediaKit。MediaMTX 仍保留为局域网回退测试路径：
 
 ```text
-/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> rtspclientsink -> MediaMTX live
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> flvmux -> rtmpsink -> ZLMediaKit live/openrd
 # fallback:
-/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegdec -> videoconvert NV12 -> mpph264enc -> h264parse -> rtspclientsink -> MediaMTX live
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegdec -> videoconvert NV12 -> mpph264enc -> h264parse -> flvmux -> rtmpsink -> ZLMediaKit live/openrd
 reserved paths:
   live-front -> rtsp://<板子IP>:8554/live-front
   live-rear  -> rtsp://<板子IP>:8554/live-rear
 default path:
-  live       -> rtsp://<板子IP>:8554/live
-  live       -> http://<板子IP>:8889/live/
+  live/openrd -> rtsp://43.139.25.165/live/openrd
+  live/openrd -> http://43.139.25.165:8888/live/openrd.live.flv
 ```
 
 当前板端验证 UVC 摄像头经 `rtspclientsink` 发布到 `live` 稳定可用；MediaMTX 再把同一路 `live` 转为 WebRTC。MediaMTX 默认配置关闭接口地址自动枚举，只向浏览器宣告稳定地址 `192.168.100.108`，避免同一网卡上的动态地址或 `127.0.0.1` 干扰 ICE 选择。
@@ -157,7 +163,7 @@ ROS2 运行在 Ubuntu 22.04 chroot 内，不能直接执行宿主 Debian 路径 
 - 宿主 Debian：`openrd-video-native.service` 负责真正运行 `openrd-video-native run`；
 - 宿主 Debian：`openrd-video-native.service` 通过 `openrd-video-native supervise` 负责真正运行并自动恢复视频链路；
 - chroot ROS2：`openrd-video-systemd` 通过 `sudo -n systemctl start/stop/restart openrd-video-native.service` 管理宿主服务，并读取同一个状态目录；
-- systemd：默认 UVC 链路只要求 `openrd-video-native.service` 与 `mediamtx.service` 保持 `enabled`，板子重启后会自动尝试恢复推流和发布；`rkaiq_3A.service` 仅在 CSI/IMX415 调试时需要关注。
+- systemd：默认 UVC 链路只要求 `openrd-video-native.service` 保持 `enabled`，板子重启后会自动尝试恢复云端 RTMP 推流；`mediamtx.service` 可作为局域网回退服务保留，`rkaiq_3A.service` 仅在 CSI/IMX415 调试时需要关注。
 
 首次部署服务：
 

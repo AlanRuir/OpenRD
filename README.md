@@ -277,6 +277,7 @@ vehicle/
 - `docs/03_control_protocol.md`：WebSocket、ROS2 topic、UART 控制协议；
 - `docs/04_vehicle_ros2_architecture.md`：RK3588 车端 ROS2-first 架构；
 - `docs/05_rk3588_deployment.md`：RK3588 原生视频与 ROS2 chroot 部署边界。`vehicle/native_video/README.md` 记录原生视频 runtime，`openrd_video_node` 负责管理它。
+- `docs/06_public_video_control.md`：公网视频按需启停方案，定义云端 control service、车端 video agent、前端启停和 lease 机制。
 
 ## 下一步
 

@@ -20,6 +20,7 @@
 - `run_openrd_video_smoke_test.sh`：启动 launch，通过 ROS2 service 验证原生视频 runtime 启停。
 - `run_openrd_rtp_smoke_test.sh`：legacy RTP 冒烟测试，使用 `live-rtp`，不覆盖默认 `live` publisher 链路。
 - `run_openrd_rtsp_smoke_test.sh`：启动默认 `rtsp` publisher 模式，验证 RTSP/HLS/WebRTC 全链路。
+- `start_openrd_cloud_rtmp.sh`：从 RK3588 摄像头直接推 RTMP 到腾讯云 ZLMediaKit，默认地址 `rtmp://43.139.25.165:1935/live/openrd`。
 - `monitor_openrd_video_chain.sh`：长期监测视频链路，分层记录 service、RTSP 读帧、WebRTC HTTP、MediaMTX journal 和 RK camera/ISP kernel 日志。
 - `monitor_openrd_resource_usage.sh`：默认 20 分钟采样 CPU、内存、温度、CPU 频率、devfreq、MPP session、视频进程 CPU/MEM、RTSP/WebRTC 健康状态，用于比较 `jpegdec` 与 `mppjpegdec` 链路资源占用。
 
@@ -59,6 +60,43 @@
 RTSP:   rtsp://192.168.100.108:8554/live
 WebRTC: http://192.168.100.108:8889/live/
 ```
+
+## 公网 RTMP 推流
+
+在 RK3588 上启动到腾讯云 ZLMediaKit 的公网推流：
+
+```bash
+cd /home/linaro/OpenRD
+tools/rk3588/start_openrd_cloud_rtmp.sh start
+tools/rk3588/start_openrd_cloud_rtmp.sh status
+```
+
+默认链路：
+
+```text
+/dev/openrd-cam-uvc
+  -> v4l2src MJPG
+  -> mppjpegdec
+  -> mpph264enc
+  -> flvmux
+  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+```
+
+停止公网推流：
+
+```bash
+cd /home/linaro/OpenRD
+tools/rk3588/start_openrd_cloud_rtmp.sh stop
+```
+
+本机拉流：
+
+```powershell
+ffplay -fflags nobuffer -flags low_delay -framedrop http://43.139.25.165:8888/live/openrd.live.flv
+ffplay -rtsp_transport tcp rtsp://43.139.25.165/live/openrd
+```
+
+也可以用 VLC 打开 `http://43.139.25.165:8888/live/openrd.live.flv`。
 
 ## 资源占用监测
 

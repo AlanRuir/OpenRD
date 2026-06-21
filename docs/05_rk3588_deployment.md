@@ -111,6 +111,24 @@ bash tools/rk3588/build_openrd_ros2_ws.sh
 bash tools/rk3588/run_openrd_ros2_smoke_test.sh
 bash tools/rk3588/enter_openrd_chroot.sh
 ```
+
+## 公网视频中继候选
+
+当前准备先按“云端视频中继”方式验证远程访问，不直接暴露车端局域网端口。
+
+```text
+RK3588 原生视频链路
+  -> 主动推流
+腾讯云服务器 43.139.25.165
+  -> ZLMediaKit / MediaMTX
+浏览器前端
+  -> WebRTC / WHEP 播放
+```
+
+计划优先评估 ZLMediaKit 作为腾讯云中继服务，MediaMTX 保留为轻量回退方案。仓库只记录服务器公网 IP 和用途，不记录账号、密钥、防火墙规则或证书私钥。
+
+当前服务器运行和烟测记录见 `infra/openrd-video-relay/README.md`。
+
 ## Native Video Runtime v0.1
 
 OpenRD 已引入正式的原生视频运行时 CLI：

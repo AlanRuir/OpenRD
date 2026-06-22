@@ -271,6 +271,7 @@ vehicle/
 - `docs/04_vehicle_ros2_architecture.md`：RK3588 车端 ROS2-first 架构；
 - `docs/05_rk3588_deployment.md`：RK3588 原生视频与 ROS2 chroot 部署边界。`vehicle/native_video/README.md` 记录原生视频 runtime，`openrd_video_node` 负责管理它。
 - `docs/06_public_video_control.md`：公网视频按需启停方案，定义云端 control service、车端 video agent、前端启停和 lease 机制。
+- `docs/07_public_drive_control.md`：公网底盘控制方案，定义云端控制通道、RK3588 control agent、安全规则和阶段路线。
 - `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
 - `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。
 

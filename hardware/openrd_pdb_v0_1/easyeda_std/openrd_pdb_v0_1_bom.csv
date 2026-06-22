@@ -1,0 +1,18 @@
+Designator,Name,Spec,Qty,Note
+J1,BATT_IN,Deans T pigtail pads,1,3S battery discharge input
+J2,MOTOR_OUT,Deans T pigtail pads,1,to motor driver board
+F1,Total fuse,Automotive blade fuse holder + 10A fuse,1,adjust after current test
+SW1,Main switch connector,2P high-current connector,1,external switch
+F2,RK branch fuse,5A-7.5A fuse,1,adjust after RK load test
+J3,DCDC_IN,2P 5.08mm terminal,1,to LTC3780 IN
+J4,DCDC_OUT,2P 5.08mm terminal,1,from LTC3780 OUT
+J5,RK_OUT,2P terminal or wire pads,1,to DC5525 center-positive plug
+U1,DC-DC module,LTC3780 buck-boost module 78x46mm default,1,verify actual hole spacing
+R1,Divider high side,100k 1%,1,BATT+ to sense raw
+R2,Divider low side,27k 1%,1,sense raw to GND
+R3,ADC series resistor,1k-4.7k,1,sense protection
+J6,ADC_TEST,3P 2.54mm header,1,BATT_SENSE/GND/NC
+LED1,Power LED,LED,1,BAT_SW_12V indicator
+RLED,LED resistor,2.2k-4.7k,1,LED current limit
+H1-H4,Chassis holes,M3 3.2mm NPTH,4,board mounting
+U1H1-U1H4,Module holes,M3 3.2mm NPTH,4,LTC3780 module mounting

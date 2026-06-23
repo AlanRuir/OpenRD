@@ -6,7 +6,28 @@
 
 ## 当前状态
 
-当前已经实车验证的底盘控制链路是局域网直连：
+当前已经实车验证的主链路是公网控制闭环：
+
+```text
+Flutter Web 前端
+  -> HTTP
+云端 openrd-control-service
+  -> HTTP long-poll
+RK3588 openrd-control-agent
+  -> HTTP
+ESP32 / OpenRD-Driver
+  -> UART2
+四路编码器电机驱动板
+  -> 四轮底盘
+```
+
+默认公网控制地址：
+
+```text
+http://43.139.25.165:8790
+```
+
+局域网直连链路仍作为回退调试路径保留：
 
 ```text
 Flutter Web 前端
@@ -17,7 +38,7 @@ ESP32 / OpenRD-Driver
   -> 四轮底盘
 ```
 
-默认控制地址：
+回退控制地址：
 
 ```text
 http://192.168.100.114
@@ -26,12 +47,15 @@ http://192.168.100.114
 当前已验证：
 
 - Flutter 前端可通过浏览器 Gamepad API 读取手柄；
-- 前端可请求 OpenRD-Driver 的 `/status`、`/control`、`/read_vol`；
+- 前端可请求云端 `openrd-control-service` 的 `/drive/status`、`/drive/command`、`/drive/stop`、`/drive/estop`、`/drive/reset_estop`；
+- RK3588 `openrd-control-agent.service` 已部署并开机自启，可把云端命令转发给 ESP32；
+- 车端 agent 已验证本地 watchdog、急停锁定和急停复位；
+- 前端也可回退请求 OpenRD-Driver 的 `/status`、`/control`、`/read_vol`；
 - ESP32 到四路电机驱动板的 UART 协议已跑通；
 - 当前实车物理映射为 `M1/M2 = 左侧`、`M3/M4 = 右侧`；
 - 前进、后退、左转、右转、停止已能通过手柄控制；
 - 电池电压和电量显示已接入；
-- 控制链路仍要求前端和 ESP32 位于同一局域网。
+- 公网链路不要求前端和 ESP32 位于同一局域网。
 
 ## 目标
 
@@ -163,6 +187,80 @@ POST /read_vol
 ```
 
 云端和车端之间优先使用 WebSocket。若 RK3588 环境短期缺少依赖，也可以像视频 Phase 1 一样先使用 HTTP polling，但控制链路目标应尽快切到 WebSocket 或 DataChannel，因为驾驶命令需要更低延迟和更稳定的连续传输。
+
+当前已先落地 HTTP long-poll 版本，原因是它只依赖 Python 标准库，和已验证的视频按需启停链路一致：
+
+```text
+Flutter Web
+  -> HTTP POST /api/vehicles/openrd-001/drive/command
+云端 openrd-control-service
+  -> /api/agent/poll long-poll
+RK3588 openrd-control-agent
+  -> HTTP POST http://192.168.100.114/control
+ESP32 OpenRD-Driver
+```
+
+已实现的文件：
+
+```text
+server/openrd_control_service/openrd_control_service.py
+vehicle/control_agent/openrd-control-agent
+infra/systemd/openrd-control-agent.service
+tools/rk3588/install_openrd_control_agent.sh
+frontend/openrd_frontend/lib/control_link_web.dart
+```
+
+当前前端控制地址默认改为：
+
+```text
+http://43.139.25.165:8790
+```
+
+如需回退局域网直连，调试面板中把控制地址改为：
+
+```text
+http://192.168.100.114
+```
+
+### 历史部署验证记录
+
+以下记录是 2026-06-22 的 Phase 1 HTTP long-poll 部署与低速闭环验证结果，用于追溯当时的实车状态；它不是实时在线状态。实时状态应以 `GET /api/vehicles/openrd-001/drive/status`、`GET /api/vehicles/openrd-001/video/status` 和 RK3588 systemd 状态为准。
+
+```text
+云端 openrd-control-service:
+  http://43.139.25.165:8790
+
+RK3588:
+  host: ATK-DLRK3588
+  ip: 192.168.100.108 / 192.168.100.110
+  service: openrd-control-agent.service
+  state: enabled + active
+
+ESP32 OpenRD-Driver:
+  http://192.168.100.114
+```
+
+低速闭环验证结果：
+
+```text
+POST /drive/stop
+  -> target [0,0,0,0]
+
+POST /drive/command throttle=0.35 speed_limit=120
+  -> target [42,42,42,42]
+
+POST /drive/stop
+  -> target [0,0,0,0]
+```
+
+当时云端状态可看到：
+
+```text
+drive_agent_online=true
+esp32_online=true
+drive_state=idle
+battery_voltage_v≈11.5
+```
 
 ## 前端到云端协议草案
 
@@ -407,7 +505,7 @@ session orchestration:
 ### Phase 1：公网控制最小闭环
 
 ```text
-前端 WebSocket
+前端 HTTP
   -> 云端 control service
   -> RK3588 control agent
   -> ESP32 OpenRD-Driver HTTP
@@ -415,14 +513,14 @@ session orchestration:
 
 实现内容：
 
-- 云端增加前端控制 WebSocket；
-- 云端增加车端 control agent 通道；
+- 云端增加前端控制 API；
+- 云端增加车端 control agent 轮询通道；
 - RK3588 增加 `openrd-control-agent`；
 - agent 将安全后的四轮速度转发到 `http://192.168.100.114/control`；
 - agent 实现本地超时停车；
-- 前端增加“公网控制模式”；
-- 默认限速 `200-300`；
-- 实现 stop 和 estop。
+- 前端 HTTP 控制链路自动识别云端 API 或 ESP32 直连；
+- 默认限速 `300`；
+- 实现 stop、estop 和 reset_estop。
 
 验收：
 
@@ -468,7 +566,7 @@ session orchestration:
 
 ## 当前建议
 
-下一步先做 Phase 1，但第一版就必须包含：
+Phase 1 最小闭环已经完成过实车低速验证，当前代码已包含：
 
 - 车端 watchdog；
 - 前端断开停车；
@@ -477,4 +575,4 @@ session orchestration:
 - stop/estop；
 - ESP32 超时保护验证。
 
-控制链路不能只以“能动”为验收标准，最低验收标准必须是“失联必停”。
+后续进入 Phase 2：补 token/session 鉴权、驾驶会话互斥、视频 ready gate、状态面板和更完整的运维日志。控制链路不能只以“能动”为验收标准，最低验收标准必须是“失联必停”。

@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenRD video latency sidecar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/OpenRD
+Environment=OPENRD_VIDEO_LATENCY_INPUT=rtsp://127.0.0.1/live/openrd
+Environment=OPENRD_VIDEO_LATENCY_STATUS_FILE=/tmp/openrd-video-latency.json
+EnvironmentFile=-/home/ubuntu/OpenRD/tools/video_latency/run/openrd-video-latency-sidecar.env
+ExecStart=/usr/bin/python3 /home/ubuntu/OpenRD/tools/video_latency/openrd_video_latency_sidecar.py --input ${OPENRD_VIDEO_LATENCY_INPUT} --status-file ${OPENRD_VIDEO_LATENCY_STATUS_FILE}
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

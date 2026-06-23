@@ -4,9 +4,11 @@
 
 ## 总体架构
 
-OpenRD v0.1 采用局域网 ROS2-first 车端架构。
+OpenRD 的目标车端架构仍是 ROS2-first。基础 v0.1 设计面向局域网 WebSocket -> ROS2 -> UART 闭环；当前实车公网 Phase 1 为了快速验证远程驾驶体验，先使用云端 HTTP API + RK3588 agent 主动轮询 + ESP32 OpenRD-Driver HTTP proxy。两条链路共用同一套上层驾驶输入模型，后续应把公网控制接回 ROS2 safety + UART 正式链路。
 
 ```text
+目标正式链路：
+
 Flutter 控制端
   ├─ 浏览器 / 手机触屏 / 手柄输入
   ├─ WebSocket 控制命令
@@ -29,6 +31,20 @@ ESP32 下位机
   ├─ 电机控制
   ├─ 超时停车
   └─ 急停保护
+```
+
+```text
+当前公网 Phase 1 实车链路：
+
+Flutter Web 前端
+  -> HTTP
+云端 openrd-control-service
+  -> HTTP long-poll
+RK3588 openrd-control-agent
+  -> HTTP
+ESP32 OpenRD-Driver
+  -> UART2
+四路电机驱动板
 ```
 
 ## ROS2 package 规划
@@ -67,7 +83,8 @@ Flutter 控制端负责用户交互和控制命令生成。
 - 提供驾驶 UI；
 - 支持触屏虚拟摇杆；
 - 支持浏览器手柄输入；
-- 连接 RK3588 WebSocket 控制入口；
+- 目标正式链路连接 RK3588 WebSocket 控制入口；
+- 当前公网 Phase 1 默认连接云端 `openrd-control-service` HTTP API，局域网回退时可直连 ESP32 OpenRD-Driver；
 - 按固定频率发送驾驶命令；
 - 显示车端状态；
 - 显示视频画面；
@@ -188,7 +205,7 @@ QoS 建议：
 
 ## 控制数据流
 
-v0.1 控制链路：
+目标 v0.1 ROS2 控制链路：
 
 ```text
 手柄 / 触屏
@@ -214,6 +231,22 @@ v0.1 控制链路：
 - 控制命令要带序号；
 - 控制端按固定频率持续发送命令，而不是只在按键变化时发送；
 - 任意一层检测到异常都应进入停车或急停状态。
+
+当前公网 Phase 1 控制链路：
+
+```text
+手柄 / 触屏
+  -> Flutter 输入归一化
+  -> HTTP POST /api/vehicles/openrd-001/drive/command
+  -> 云端 openrd-control-service
+  -> RK3588 openrd-control-agent 主动 long-poll
+  -> HTTP POST http://192.168.100.114/control
+  -> ESP32 OpenRD-Driver
+  -> UART2
+  -> 四路电机驱动板
+```
+
+这条短期链路用于公网实车验证。它不能替代长期 ROS2 safety + UART 架构，后续应把 `openrd-control-agent` 的底盘后端从 ESP32 HTTP proxy 切到 ROS2 `/openrd/drive_cmd` 或等效安全入口。
 
 ## 视频数据流
 
@@ -286,7 +319,7 @@ v0.1 状态建议包含：
 
 ## 网络拓扑
 
-v0.1 局域网拓扑：
+基础 v0.1 局域网拓扑：
 
 ```text
 电脑 / 手机
@@ -300,7 +333,20 @@ v0.1 局域网拓扑：
 - WebSocket 控制端口默认规划为 `8080`；
 - ROS2 graph 默认只在车端本机运行；
 - 初期不把 ROS2 DDS 暴露给外部网络；
-- 初期不暴露任何端口到公网。
+- 基础局域网 MVP 不暴露任何端口到公网。
+
+当前公网 Phase 1 拓扑：
+
+```text
+Flutter Web / 手机浏览器
+  -> 43.139.25.165 openrd-control-service
+RK3588 video/control agent
+  -> 主动出站访问云端
+RK3588 / ESP32 所在局域网
+  -> 不暴露入站端口
+```
+
+公网阶段的原则是车端主动出站，前端只访问云端，不把 ESP32 HTTP、RK3588 SSH、ROS2 DDS 或其他局域网服务直接暴露到公网。
 
 ## 后续演进
 
@@ -320,7 +366,8 @@ v0.1 局域网拓扑：
 
 ### v0.4 公网能力
 
-- 引入信令服务；
+- 已提前完成 Phase 1：云端控制服务、ZLMediaKit 视频中继、RK3588 video/control agent、视频按需启停和底盘 HTTP proxy 控制；
+- 后续补 token/session 鉴权、驾驶会话互斥、视频 ready gate 和状态面板；
 - 引入 WebRTC；
 - 部署 TURN；
 - 评估 DataChannel 替换 WebSocket。

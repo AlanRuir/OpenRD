@@ -24,6 +24,7 @@ v0.1 支持：
 - `file` 模式保存 H.264 裸流；
 - legacy `rtp` 模式把 H.264 封装为 RTP/UDP 发给本机 MediaMTX 的独立路径；
 - 默认 `rtmp` publisher 模式，直接发布到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
+- 可选 `rtmp-sei` publisher 模式：编码后插入 OpenRD H.264 SEI，再由 `ffmpeg` 封装 FLV 推到腾讯云 ZLMediaKit，用于实时视频延迟可视化；
 - 保留本机 MediaMTX `rtsp` publisher 模式作为局域网回退链路；
 - 后台启动、停止、重启、状态查询；
 - 后台监督运行，RTSP 模式下必须实际读到视频帧才判定健康；
@@ -34,7 +35,10 @@ v0.1 暂不支持：
 
 - 直接 WebRTC 推流；
 - 双摄管理；
+- 实时逐帧 H.264/H.265 SEI 延迟时间戳注入；
 - 直接发布 ROS2 `sensor_msgs/Image`。
+
+视频延迟测量工具已放在 `tools/video_latency/`。当前可以对 H.264 Annex-B 文件做 OpenRD SEI 注入和解析验证，也可以用 `rtmp-sei` 模式在编码后实时插入 SEI。注意：`rtmp-sei` 使用的是编码后过滤器收到 VCL NAL 的时间，不是原始 `v4l2_buffer.timestamp`；要测严格 capture timestamp，需要后续把当前 `gst-launch-1.0` shell pipeline 升级为可处理每个 buffer metadata 的 GStreamer API/C++/Python runtime。
 
 ## 常用命令
 
@@ -62,6 +66,9 @@ ls -lh /tmp/openrd_camera_test.h264
 ./openrd-video-native start --mode rtmp --rtmp-url rtmp://43.139.25.165:1935/live/openrd
 ffprobe -rtsp_transport tcp rtsp://43.139.25.165/live/openrd
 ./openrd-video-native stop
+
+# 推带 OpenRD SEI 的 RTMP，用于云端 sidecar 解析实时视频延迟
+./openrd-video-native run --mode rtmp-sei --rtmp-url rtmp://43.139.25.165:1935/live/openrd
 
 # 回退：推 RTSP 给本机 MediaMTX，再从局域网 RTSP/WebRTC 播放
 ./openrd-video-native start --mode rtsp --rtsp-url rtsp://127.0.0.1:8554/live

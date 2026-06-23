@@ -22,6 +22,55 @@ class DriverBatterySnapshot {
   final int ageMs;
 }
 
+class ControlLatencySnapshot {
+  const ControlLatencySnapshot({
+    required this.controlRttMs,
+    required this.statusRttMs,
+    required this.commandAgeMs,
+    required this.agentSeenAgeMs,
+    required this.updatedAtMs,
+  });
+
+  const ControlLatencySnapshot.unknown()
+    : controlRttMs = null,
+      statusRttMs = null,
+      commandAgeMs = null,
+      agentSeenAgeMs = null,
+      updatedAtMs = 0;
+
+  final int? controlRttMs;
+  final int? statusRttMs;
+  final int? commandAgeMs;
+  final int? agentSeenAgeMs;
+  final int updatedAtMs;
+
+  bool get hasData =>
+      controlRttMs != null ||
+      statusRttMs != null ||
+      commandAgeMs != null ||
+      agentSeenAgeMs != null;
+
+  String get summaryLabel {
+    final control = controlRttMs == null ? '控--' : '控 ${controlRttMs}ms';
+    final status = statusRttMs == null ? '状--' : '状 ${statusRttMs}ms';
+    return '$control / $status';
+  }
+
+  String get detailLabel {
+    final parts = <String>[
+      controlRttMs == null ? '控制RTT --' : '控制RTT ${controlRttMs}ms',
+      statusRttMs == null ? '状态RTT --' : '状态RTT ${statusRttMs}ms',
+    ];
+    if (commandAgeMs != null) {
+      parts.add('命令龄 ${commandAgeMs}ms');
+    }
+    if (agentSeenAgeMs != null) {
+      parts.add('agent龄 ${agentSeenAgeMs}ms');
+    }
+    return parts.join(' · ');
+  }
+}
+
 class DriveControlMessage {
   const DriveControlMessage({
     required this.seq,
@@ -65,6 +114,7 @@ class ControlLinkSnapshot {
     required this.lastSent,
     required this.lastReceived,
     this.battery = const DriverBatterySnapshot.unknown(),
+    this.latency = const ControlLatencySnapshot.unknown(),
   });
 
   factory ControlLinkSnapshot.initial(String endpoint) {
@@ -77,6 +127,7 @@ class ControlLinkSnapshot {
       lastSent: null,
       lastReceived: '',
       battery: const DriverBatterySnapshot.unknown(),
+      latency: const ControlLatencySnapshot.unknown(),
     );
   }
 
@@ -88,6 +139,7 @@ class ControlLinkSnapshot {
   final DriveControlMessage? lastSent;
   final String lastReceived;
   final DriverBatterySnapshot battery;
+  final ControlLatencySnapshot latency;
 
   bool get isConnected => state == ControlLinkState.connected;
 

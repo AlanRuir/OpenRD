@@ -12,6 +12,7 @@ Environment=OPENRD_CONTROL_HOST=0.0.0.0
 Environment=OPENRD_CONTROL_PORT=8790
 Environment=OPENRD_CONTROL_ALLOW_ORIGIN=*
 Environment=OPENRD_CONTROL_AGENT_TIMEOUT_SEC=45
+Environment=OPENRD_VIDEO_LATENCY_STATUS_FILE=/tmp/openrd-video-latency.json
 EnvironmentFile=-/home/ubuntu/OpenRD/server/openrd_control_service/run/openrd-control.env
 ExecStart=/usr/bin/python3 /home/ubuntu/OpenRD/server/openrd_control_service/openrd_control_service.py
 Restart=always

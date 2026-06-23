@@ -12,6 +12,9 @@ OpenRD 的 Flutter 前端，当前先做 Web MVP：驾驶控制台 + 实时视�
 - 浏览器 Gamepad API 手柄输入
 - WebSocket 控制输出和本地 mock server 验证
 - OpenRD-Driver HTTP 直连控制
+- 公网底盘控制，默认走 `openrd-control-service` + RK3588 `openrd-control-agent`
+- 控制链路实时延迟显示：控制 RTT、状态 RTT，云端模式下显示命令龄和 agent 上报龄
+- 视频链路实时延迟显示：读取云端 `/video/status` 中的 `video_latency_*` 字段
 - OpenRD-Driver 电池电压/电量显示
 - RK 摄像头实时预览
 - 支持云端 ZLMediaKit HTTP-FLV 视频播放
@@ -44,6 +47,14 @@ http://43.139.25.165:8888/live/openrd.live.flv
 
 视频面板不会在页面打开时自动拉起推流。点击“启动视频推流”后，前端会请求云端 control service，再由 RK3588 上的 `openrd-video-agent` 启动 `openrd-video-native.service`。视频播放期间前端每 30 秒续约一次；点击“停止视频推流”或续约超时后，车端会停止推流以避免持续消耗公网流量。
 
+视频延迟由云端 sidecar 解析 H.264 SEI 后写入状态文件，再由 control service 合并进：
+
+```text
+GET /api/vehicles/openrd-001/video/status
+```
+
+前端只显示 `video_latency_ms`、p50/p95、帧号和状态，不直接解析 HTTP-FLV 或 H.264 码流。若状态为 `unknown`、`no_sei`、`stale`、`clock_unsynced` 或 `error`，界面显示状态原因，不把旧数值当作实时延迟。
+
 RK3588 板端通过 `openrd-video-native.service` 主动推送 RTMP 到云端：
 
 ```text
@@ -74,11 +85,40 @@ ZLMediaKit 服务器当前关闭 HLS/MP4 录制，只做直播转发，避免生
 - D-pad：数字方向输入
 - A/B：停止
 
-手柄面板会显示连接状态、设备名和当前按下的按钮；方向/油门显示的是已经映射后的驾驶值。连接 OpenRD-Driver HTTP 地址后，前端会按速度上限把手柄输入换算成四路电机速度并发送给 ESP32。
+手柄面板会显示连接状态、设备名和当前按下的按钮；方向/油门显示的是已经映射后的驾驶值。默认连接云端控制地址后，前端把方向/油门发送到 `openrd-control-service`，再由 RK3588 `openrd-control-agent` 限幅并转发给 ESP32。回退连接 OpenRD-Driver HTTP 地址时，前端会按速度上限把手柄输入换算成四路电机速度并直接发送给 ESP32。
+
+## 公网底盘控制
+
+默认控制地址：
+
+```text
+http://43.139.25.165:8790
+```
+
+点击顶部“连接”后，前端会请求：
+
+```text
+GET /api/vehicles/openrd-001/drive/status
+```
+
+确认 `drive_agent_online=true` 后，手柄、触屏摇杆和备用控制按钮都会通过：
+
+```text
+POST /api/vehicles/openrd-001/drive/command
+```
+
+发送 `steering`、`throttle`、`speed_limit` 等上层驾驶意图。RK3588 上的 `openrd-control-agent.service` 负责转成四轮速度并请求 ESP32 `/control`。
+
+当前已验证云端低速闭环：
+
+```text
+前端/测试请求 -> 云端 -> RK3588 -> ESP32
+target: [0,0,0,0] -> [42,42,42,42] -> [0,0,0,0]
+```
 
 ## OpenRD-Driver 直连
 
-默认控制地址：
+回退控制地址：
 
 ```text
 http://192.168.100.114
@@ -145,9 +185,9 @@ ws://127.0.0.1:8080/control
 }
 ```
 
-WebSocket mock 仍保留，用于不接车时验证前端控制消息。HTTP 直连用于当前 ESP32/OpenRD-Driver 实车调试；后续接入 ROS2 bridge 时可以继续使用同一个上层手柄输入模型。
+WebSocket mock 仍保留，用于不接车时验证前端控制消息。云端控制用于当前公网底盘控制；HTTP 直连用于 ESP32/OpenRD-Driver 局域网回退调试。后续接入 ROS2 bridge 时可以继续使用同一个上层手柄输入模型。
 
 ## 注意
 
-- 当前前端默认使用云端 ZLMediaKit 视频流，控制链路仍可直连局域网内的 OpenRD-Driver。
+- 当前前端默认使用云端 ZLMediaKit 视频流和云端底盘控制；局域网 OpenRD-Driver 直连作为回退。
 - 如果浏览器拦截自动播放，先保留 `静音` 选项，再手动点击播放。

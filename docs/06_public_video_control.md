@@ -461,6 +461,7 @@ stop wait timeout:       5s
 ### Phase 4：视频低延迟升级
 
 - HTTP-FLV 保留为兼容播放链路；
+- 视频延迟测量按 `docs/10_video_latency_measurement.md` 推进，优先验证 H.264/H.265 SEI 时间戳能穿过 RTMP/ZLMediaKit 链路；
 - 评估 ZLMediaKit WebRTC / WHIP / WHEP；
 - 前端播放器切到更低延迟链路；
 - control service 继续负责按需启停和观看 lease。

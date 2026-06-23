@@ -38,6 +38,59 @@ enum DriveCommand { forward, backward, left, right, stop }
 
 enum StreamPlaybackState { stopped, loading, ready, error }
 
+Color _videoLatencyColor(VideoLatencySnapshot latency) {
+  if (!latency.hasData) {
+    switch (latency.state) {
+      case 'error':
+      case 'clock_unsynced':
+        return const Color(0xFFC62828);
+      case 'stale':
+      case 'no_sei':
+      case 'no_stream':
+        return const Color(0xFFEF6C00);
+      default:
+        return Colors.orange;
+    }
+  }
+
+  final current = latency.currentMs!;
+  if (current < 150) {
+    return const Color(0xFF2E7D32);
+  }
+  if (current < 300) {
+    return const Color(0xFFF9A825);
+  }
+  if (current < 600) {
+    return const Color(0xFFEF6C00);
+  }
+  return const Color(0xFFC62828);
+}
+
+Color _videoPlaybackLatencyColor(VideoPlaybackLatencySnapshot latency) {
+  final current = latency.latencyMs;
+  if (current == null) {
+    switch (latency.state) {
+      case 'error':
+        return const Color(0xFFC62828);
+      case 'paused':
+        return const Color(0xFF607D8B);
+      default:
+        return Colors.orange;
+    }
+  }
+
+  if (current < 500) {
+    return const Color(0xFF2E7D32);
+  }
+  if (current < 1000) {
+    return const Color(0xFFF9A825);
+  }
+  if (current < 2000) {
+    return const Color(0xFFEF6C00);
+  }
+  return const Color(0xFFC62828);
+}
+
 class ControlDashboardPage extends StatefulWidget {
   const ControlDashboardPage({super.key});
 
@@ -49,16 +102,17 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   static const String _defaultStreamHost = '43.139.25.165';
   static const String _defaultStreamPath = 'live/openrd';
   static const String _defaultVideoControlUrl = 'http://43.139.25.165:8790';
+  static const String _defaultDriveControlUrl = 'http://43.139.25.165:8790';
   static const String _videoVehicleId = 'openrd-001';
   static const int _videoLeaseSec = 120;
 
   DriveCommand _lastCommand = DriveCommand.stop;
   final TextEditingController _controlEndpointController =
-      TextEditingController(text: 'http://192.168.100.114');
+      TextEditingController(text: _defaultDriveControlUrl);
   bool _manualMode = true;
   double _steering = 0.0;
   double _throttle = 0.0;
-  int _speedLimit = 500;
+  int _speedLimit = 300;
   bool _streamMuted = true;
   bool _videoPlaybackEnabled = false;
   bool _videoCommandBusy = false;
@@ -66,6 +120,9 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   StreamPlaybackState _streamState = StreamPlaybackState.stopped;
   String _streamStatusMessage = '视频推流未启动';
   String _videoCloudState = 'unknown';
+  VideoLatencySnapshot _videoLatency = const VideoLatencySnapshot.unknown();
+  VideoPlaybackLatencySnapshot _videoPlaybackLatency =
+      const VideoPlaybackLatencySnapshot.unknown();
   late final String _videoViewerId =
       'openrd-web-${DateTime.now().millisecondsSinceEpoch}-${math.Random().nextInt(99999)}';
 
@@ -75,7 +132,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   final VideoControlClient _videoControl = VideoControlClient();
   StreamSubscription<ControlLinkSnapshot>? _controlLinkSubscription;
   ControlLinkSnapshot _controlLinkSnapshot = ControlLinkSnapshot.initial(
-    'http://192.168.100.114',
+    _defaultDriveControlUrl,
   );
   Timer? _controlSendTimer;
   Timer? _videoRenewTimer;
@@ -111,7 +168,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       (_) => _flushControlIfNeeded(),
     );
     _videoCloudStatusTimer = Timer.periodic(
-      const Duration(seconds: 5),
+      const Duration(seconds: 1),
       (_) => unawaited(_refreshVideoCloudStatus()),
     );
     unawaited(_refreshVideoCloudStatus());
@@ -332,6 +389,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
     setState(() {
       _streamState = StreamPlaybackState.loading;
       _streamStatusMessage = message;
+      _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
     });
   }
 
@@ -344,6 +402,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       _streamReloadToken += 1;
       _streamState = StreamPlaybackState.loading;
       _streamStatusMessage = '正在手动重连视频流';
+      _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
     });
     _pushEvent('重连视频流');
   }
@@ -358,6 +417,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       _videoPlaybackEnabled = false;
       _streamState = StreamPlaybackState.loading;
       _streamStatusMessage = '正在请求云端启动视频推流';
+      _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
     });
     _pushEvent('请求启动云端视频');
 
@@ -381,6 +441,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
         _streamReloadToken += 1;
         _streamState = StreamPlaybackState.loading;
         _streamStatusMessage = '正在打开云端视频流';
+        _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
       });
       _pushEvent('云端视频推流已启动');
     } catch (error) {
@@ -392,6 +453,9 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
         _videoPlaybackEnabled = false;
         _streamState = StreamPlaybackState.error;
         _streamStatusMessage = error.toString();
+        _videoPlaybackLatency = VideoPlaybackLatencySnapshot.error(
+          error.toString(),
+        );
       });
       _pushEvent('启动视频失败：$error');
     } finally {
@@ -414,6 +478,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       _videoPlaybackEnabled = false;
       _streamState = StreamPlaybackState.stopped;
       _streamStatusMessage = '正在停止视频推流';
+      _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
     });
     _pushEvent('请求停止云端视频');
 
@@ -430,6 +495,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       setState(() {
         _streamState = StreamPlaybackState.stopped;
         _streamStatusMessage = '视频推流已停止';
+        _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
       });
       _pushEvent('云端视频推流已停止');
     } catch (error) {
@@ -439,6 +505,9 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       setState(() {
         _streamState = StreamPlaybackState.error;
         _streamStatusMessage = error.toString();
+        _videoPlaybackLatency = VideoPlaybackLatencySnapshot.error(
+          error.toString(),
+        );
       });
       _pushEvent('停止视频失败：$error');
     } finally {
@@ -461,6 +530,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       }
       setState(() {
         _videoCloudState = snapshot.videoState;
+        _videoLatency = snapshot.videoLatency;
         _streamStatusMessage = snapshot.running
             ? '视频推流已运行'
             : '等待车端启动视频推流：${snapshot.videoState}';
@@ -493,6 +563,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       }
       setState(() {
         _videoCloudState = snapshot.videoState;
+        _videoLatency = snapshot.videoLatency;
       });
     } catch (error) {
       if (!mounted) {
@@ -516,6 +587,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       }
       setState(() {
         _videoCloudState = snapshot.videoState;
+        _videoLatency = snapshot.videoLatency;
         if (!_videoPlaybackEnabled &&
             !_videoCommandBusy &&
             _streamState != StreamPlaybackState.error) {
@@ -525,6 +597,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
           _streamStatusMessage = snapshot.running
               ? '视频推流正在运行，点击播放可接入'
               : '视频推流未启动';
+          _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
         }
       });
     } catch (_) {
@@ -533,6 +606,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
       }
       setState(() {
         _videoCloudState = 'offline';
+        _videoLatency = const VideoLatencySnapshot.unknown();
+        _videoPlaybackLatency = const VideoPlaybackLatencySnapshot.unknown();
       });
     }
   }
@@ -556,6 +631,17 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
     setState(() {
       _streamState = StreamPlaybackState.error;
       _streamStatusMessage = message;
+      _videoPlaybackLatency = VideoPlaybackLatencySnapshot.error(message);
+    });
+  }
+
+  void _handlePlaybackLatency(VideoPlaybackLatencySnapshot snapshot) {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _videoPlaybackLatency = snapshot;
     });
   }
 
@@ -665,11 +751,14 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
             final streamWhepUrl = _streamWhepUrl;
             final statusBar = _DashboardStatusBar(
               connectionState: _controlLinkSnapshot.stateLabel,
+              controlSnapshot: _controlLinkSnapshot,
               controlActive:
                   _controlLinkSnapshot.isConnected ||
                   _controlLinkSnapshot.state == ControlLinkState.connecting,
               streamState: _streamLabel(),
               streamColor: _streamColor(),
+              videoLatency: _videoLatency,
+              playbackLatency: _videoPlaybackLatency,
               gamepadState: _gamepadSnapshot.connected ? '已连接' : '未连接',
               gamepadConnected: _gamepadSnapshot.connected,
               battery: _controlLinkSnapshot.battery,
@@ -685,6 +774,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               playbackEnabled: _videoPlaybackEnabled,
               videoBusy: _videoCommandBusy,
               videoCloudState: _videoCloudState,
+              videoLatency: _videoLatency,
+              playbackLatency: _videoPlaybackLatency,
               muted: _streamMuted,
               streamViewKey: ValueKey(
                 '$streamUrl#$_streamMuted#$_streamReloadToken#$_videoPlaybackEnabled',
@@ -699,6 +790,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               onStopVideo: _stopVideoPush,
               onReady: _handleStreamReady,
               onError: _handleStreamError,
+              onLatency: _handlePlaybackLatency,
             );
             final drivePanel = _DriveControlPanel(
               endpoint: _controlLinkSnapshot.endpoint,
@@ -741,6 +833,8 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
               streamUrl: streamUrl,
               streamStatus: _streamLabel(),
               videoCloudState: _videoCloudState,
+              videoLatency: _videoLatency,
+              playbackLatency: _videoPlaybackLatency,
               onMutedChanged: (value) {
                 setState(() {
                   _streamMuted = value;
@@ -802,9 +896,12 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
 class _DashboardStatusBar extends StatelessWidget {
   const _DashboardStatusBar({
     required this.connectionState,
+    required this.controlSnapshot,
     required this.controlActive,
     required this.streamState,
     required this.streamColor,
+    required this.videoLatency,
+    required this.playbackLatency,
     required this.gamepadState,
     required this.gamepadConnected,
     required this.battery,
@@ -815,9 +912,12 @@ class _DashboardStatusBar extends StatelessWidget {
   });
 
   final String connectionState;
+  final ControlLinkSnapshot controlSnapshot;
   final bool controlActive;
   final String streamState;
   final Color streamColor;
+  final VideoLatencySnapshot videoLatency;
+  final VideoPlaybackLatencySnapshot playbackLatency;
   final String gamepadState;
   final bool gamepadConnected;
   final DriverBatterySnapshot battery;
@@ -861,10 +961,28 @@ class _DashboardStatusBar extends StatelessWidget {
                       : Colors.orange,
                 ),
                 _StatusPill(
+                  icon: Icons.speed,
+                  label: '延迟',
+                  value: _latencySummary(),
+                  color: _latencyColor(),
+                ),
+                _StatusPill(
                   icon: Icons.videocam,
                   label: '视频',
                   value: streamState,
                   color: streamColor,
+                ),
+                _StatusPill(
+                  icon: Icons.timer,
+                  label: '云端延迟',
+                  value: videoLatency.summaryLabel,
+                  color: _videoLatencyColor(videoLatency),
+                ),
+                _StatusPill(
+                  icon: Icons.live_tv,
+                  label: '播放缓冲',
+                  value: playbackLatency.summaryLabel,
+                  color: _videoPlaybackLatencyColor(playbackLatency),
                 ),
                 _StatusPill(
                   icon: Icons.gamepad,
@@ -986,6 +1104,44 @@ class _DashboardStatusBar extends StatelessWidget {
   double _batteryPercent(DriverBatterySnapshot battery) {
     return (((battery.voltageV - 8.1) / (12.6 - 8.1)) * 100).clamp(0.0, 100.0);
   }
+
+  String _latencySummary() {
+    if (!controlActive) {
+      return '未连接';
+    }
+    if (!controlSnapshot.latency.hasData) {
+      return '测量中';
+    }
+    return controlSnapshot.latency.summaryLabel;
+  }
+
+  Color _latencyColor() {
+    if (!controlActive || !controlSnapshot.latency.hasData) {
+      return Colors.orange;
+    }
+
+    final values = <int>[
+      if (controlSnapshot.latency.controlRttMs != null)
+        controlSnapshot.latency.controlRttMs!,
+      if (controlSnapshot.latency.statusRttMs != null)
+        controlSnapshot.latency.statusRttMs!,
+    ];
+    if (values.isEmpty) {
+      return Colors.orange;
+    }
+
+    final worst = values.reduce((a, b) => a > b ? a : b);
+    if (worst <= 80) {
+      return const Color(0xFF2E7D32);
+    }
+    if (worst <= 180) {
+      return const Color(0xFFF9A825);
+    }
+    if (worst <= 350) {
+      return const Color(0xFFEF6C00);
+    }
+    return const Color(0xFFC62828);
+  }
 }
 
 class _LiveVideoPanel extends StatelessWidget {
@@ -996,6 +1152,8 @@ class _LiveVideoPanel extends StatelessWidget {
     required this.playbackEnabled,
     required this.videoBusy,
     required this.videoCloudState,
+    required this.videoLatency,
+    required this.playbackLatency,
     required this.muted,
     required this.streamViewKey,
     required this.streamState,
@@ -1008,6 +1166,7 @@ class _LiveVideoPanel extends StatelessWidget {
     required this.onStopVideo,
     required this.onReady,
     required this.onError,
+    required this.onLatency,
   });
 
   final String streamUrl;
@@ -1016,6 +1175,8 @@ class _LiveVideoPanel extends StatelessWidget {
   final bool playbackEnabled;
   final bool videoBusy;
   final String videoCloudState;
+  final VideoLatencySnapshot videoLatency;
+  final VideoPlaybackLatencySnapshot playbackLatency;
   final bool muted;
   final Key streamViewKey;
   final String streamState;
@@ -1028,6 +1189,7 @@ class _LiveVideoPanel extends StatelessWidget {
   final VoidCallback onStopVideo;
   final VoidCallback onReady;
   final ValueChanged<String> onError;
+  final ValueChanged<VideoPlaybackLatencySnapshot> onLatency;
 
   @override
   Widget build(BuildContext context) {
@@ -1041,6 +1203,7 @@ class _LiveVideoPanel extends StatelessWidget {
       streamViewKey: streamViewKey,
       onReady: onReady,
       onError: onError,
+      onLatency: onLatency,
     );
 
     return _SurfacePanel(
@@ -1065,6 +1228,16 @@ class _LiveVideoPanel extends StatelessWidget {
                   icon: Icons.cloud,
                   value: videoCloudState,
                   color: streamColor,
+                ),
+                _InlineState(
+                  icon: Icons.timer,
+                  value: '云端 ${videoLatency.summaryLabel}',
+                  color: _videoLatencyColor(videoLatency),
+                ),
+                _InlineState(
+                  icon: Icons.live_tv,
+                  value: '播放 ${playbackLatency.summaryLabel}',
+                  color: _videoPlaybackLatencyColor(playbackLatency),
                 ),
                 IconButton.filledTonal(
                   onPressed: videoBusy || playbackEnabled ? null : onStartVideo,
@@ -1119,6 +1292,7 @@ class _VideoFrame extends StatelessWidget {
     required this.streamViewKey,
     required this.onReady,
     required this.onError,
+    required this.onLatency,
   });
 
   final String streamUrl;
@@ -1129,6 +1303,7 @@ class _VideoFrame extends StatelessWidget {
   final Key streamViewKey;
   final VoidCallback onReady;
   final ValueChanged<String> onError;
+  final ValueChanged<VideoPlaybackLatencySnapshot> onLatency;
 
   @override
   Widget build(BuildContext context) {
@@ -1145,6 +1320,7 @@ class _VideoFrame extends StatelessWidget {
                 muted: muted,
                 onReady: onReady,
                 onError: onError,
+                onLatency: onLatency,
                 placeholder: _StreamFallback(url: streamUrl),
               )
             : _StreamFallback(url: streamUrl, message: '视频推流未启动'),
@@ -1220,6 +1396,12 @@ class _DriveControlPanel extends StatelessWidget {
               children: [
                 _SmallInfo(label: '目标', value: endpoint),
                 _SmallInfo(label: '链路', value: controlSnapshot.stateLabel),
+                _SmallInfo(
+                  label: '延迟',
+                  value: controlSnapshot.isConnected
+                      ? controlSnapshot.latency.summaryLabel
+                      : '未连接',
+                ),
                 _SmallInfo(label: '最近', value: lastCommand),
                 _SmallInfo(label: '上限', value: '$speedLimit'),
               ],
@@ -1827,6 +2009,8 @@ class _DebugPanel extends StatelessWidget {
     required this.streamUrl,
     required this.streamStatus,
     required this.videoCloudState,
+    required this.videoLatency,
+    required this.playbackLatency,
     required this.onMutedChanged,
     required this.onStreamConfigChanged,
   });
@@ -1841,6 +2025,8 @@ class _DebugPanel extends StatelessWidget {
   final String streamUrl;
   final String streamStatus;
   final String videoCloudState;
+  final VideoLatencySnapshot videoLatency;
+  final VideoPlaybackLatencySnapshot playbackLatency;
   final ValueChanged<bool> onMutedChanged;
   final VoidCallback onStreamConfigChanged;
 
@@ -1875,11 +2061,17 @@ class _DebugPanel extends StatelessWidget {
                   controller: controlEndpointController,
                   decoration: const InputDecoration(
                     labelText: '控制地址',
-                    helperText: 'OpenRD-Driver HTTP 或 WebSocket',
+                    helperText: '云端控制 API 或 OpenRD-Driver HTTP',
                   ),
                 ),
               ),
               _SmallInfo(label: '状态', value: controlSnapshot.stateLabel),
+              _SmallInfo(
+                label: '延迟',
+                value: controlSnapshot.isConnected
+                    ? controlSnapshot.latency.summaryLabel
+                    : '未连接',
+              ),
               _SmallInfo(label: '发送', value: '${controlSnapshot.sentCount}'),
               _SmallInfo(
                 label: '接收',
@@ -1887,6 +2079,16 @@ class _DebugPanel extends StatelessWidget {
               ),
             ],
           ),
+          if (controlSnapshot.latency.hasData) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'latency: ${controlSnapshot.latency.detailLabel}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
           if (controlSnapshot.lastError.isNotEmpty) ...[
             const SizedBox(height: 8),
             Align(
@@ -1959,8 +2161,31 @@ class _DebugPanel extends StatelessWidget {
                 onSelected: onMutedChanged,
               ),
               _SmallInfo(label: '云端', value: videoCloudState),
+              _SmallInfo(label: '云端延迟', value: videoLatency.summaryLabel),
+              _SmallInfo(label: '播放缓冲', value: playbackLatency.summaryLabel),
             ],
           ),
+          if (videoLatency.state != 'unknown' || videoLatency.hasData) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'cloud latency: ${videoLatency.detailLabel}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
+          if (playbackLatency.state != 'unknown' ||
+              playbackLatency.latencyMs != null) ...[
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'playback buffer: ${playbackLatency.detailLabel}',
+                style: theme.textTheme.bodySmall,
+              ),
+            ),
+          ],
           const SizedBox(height: 12),
           Align(
             alignment: Alignment.centerLeft,

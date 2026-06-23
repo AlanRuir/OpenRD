@@ -27,10 +27,20 @@ OpenRD 不是单纯的视频小车，也不是只做 AI 检测的演示项目。
 
 ## 当前实测状态
 
-截至当前阶段，局域网内已经跑通一条可实车驾驶的临时直连链路：
+截至当前阶段，底盘控制已经有两条链路形态：
 
 ```text
-浏览器 Flutter 前端
+公网 Flutter 前端
+  -> HTTP
+云端 openrd-control-service
+  -> RK3588 openrd-control-agent
+  -> HTTP
+ESP32 / OpenRD-Driver
+  -> UART2
+四路编码器电机驱动板
+  -> 四轮底盘
+
+局域网 Flutter 前端
   -> HTTP
 ESP32 / OpenRD-Driver
   -> UART2
@@ -38,21 +48,26 @@ ESP32 / OpenRD-Driver
   -> 四轮底盘
 ```
 
-这条链路暂时绕过 RK3588/ROS2，用于优先验证手柄、前端驾驶体验、ESP32 WiFi/HTTP 和四电机驱动协议。
+公网链路是当前重点：前端不直连 ESP32，而是通过云端 + RK3588 control agent 进入底盘。当前云端服务和 RK3588 `openrd-control-agent.service` 已部署，低速闭环已验证。局域网直连链路仍保留为已验证的回退调试路径。
 
 当前已验证：
 
 - ESP32 可通过 WiFi STA 接入局域网，默认地址实测为 `http://192.168.100.114`；
 - OpenRD 前端可通过浏览器 Gamepad API 读取手柄；
-- 前端可直接请求 OpenRD-Driver 的 `GET /status` 和 `POST /control`；
+- 前端可请求云端 `openrd-control-service` 的 `GET /api/vehicles/openrd-001/drive/status` 和 `POST /api/vehicles/openrd-001/drive/command`；
+- 调试时也可回退为直接请求 OpenRD-Driver 的 `GET /status` 和 `POST /control`；
 - 四电机驱动协议使用 `$spd:m1,m2,m3,m4#` 小写命令；
 - 实车四路物理映射当前按 `M1/M2 = 左侧`、`M3/M4 = 右侧` 处理；
 - 前进、后退、左转、右转、停止已能通过手柄控制；
-- 前端有速度上限滑块，建议首次实车测试使用 `200` 或 `300`；
+- 前端有速度上限滑块，云端控制默认限速为 `300`；
+- 前端状态栏、驾驶面板和调试区会显示控制 RTT、状态 RTT；云端模式下还会显示最近命令龄和 agent 上报龄；
+- 视频链路延迟测量已落盘第一版 H.264 SEI 工具、云端 sidecar 状态文件接入和前端显示；当前仍需把实时逐帧 SEI 注入接入板端视频 runtime 并实测 RTMP/ZLMediaKit 是否保留 SEI；
 - 前端会每 3 秒刷新 OpenRD-Driver `/status`，每 30 秒触发一次 `/read_vol`，并按 12V/3S 电池估算电量显示；
 - 前端视频默认播放云端 ZLMediaKit HTTP-FLV：`http://43.139.25.165:8888/live/openrd.live.flv`；
 - 前端视频启停默认走公网控制服务：`http://43.139.25.165:8790`；
+- 前端底盘控制默认走公网控制服务：`http://43.139.25.165:8790`；
 - RK3588 宿主 `openrd-video-agent.service` 已接入云端 control service，可按前端 lease 启停 `openrd-video-native.service`；
+- RK3588 宿主 `openrd-control-agent.service` 已部署并设为开机自启，可把云端驾驶命令转发给 ESP32；
 - OpenRD-Driver 已修复浏览器 CORS，`/control` 不再返回重复的 `Access-Control-Allow-Origin`。
 
 当前前端静态调试方式：
@@ -69,11 +84,13 @@ python -m http.server 8791 --bind 127.0.0.1 -d build\web
 http://127.0.0.1:8791/
 ```
 
+前端调试面板里的控制地址默认是云端 `http://43.139.25.165:8790`；如果要回退到局域网直连，可手工填 `http://192.168.100.114`。
+
 视频推流不再要求长期常开。前端点击“启动视频推流”后，会通过公网 control service 通知 RK3588 上的 `openrd-video-agent.service` 启动 `openrd-video-native.service`；播放期间前端会续约 lease，点击停止或 lease 超时后车端自动停止推流，避免持续消耗公网流量。
 
-## MVP 目标
+## 基础 MVP 目标
 
-第一阶段只做局域网 MVP，不直接引入公网、双摄、YOLO 或复杂云端架构。
+基础 v0.1 MVP 原本只定义局域网驾驶闭环，不把公网、双摄、YOLO 或复杂云端架构作为第一阶段验收项。当前项目已经在这个基础目标之上提前推进了公网视频和公网底盘控制 Phase 1；公网实车调试链路当前走云端 `openrd-control-service` + RK3588 `openrd-control-agent` + ESP32 OpenRD-Driver HTTP proxy，正式 ROS2 WebSocket -> safety -> UART 链路仍是后续接回目标。
 
 MVP 成功标准：
 
@@ -108,7 +125,7 @@ MVP 成功标准：
 - 前端框架：Flutter；
 - 支持平台：Web、Android、iOS；
 - 初期控制输入：浏览器 + 手柄、手机触屏；
-- 当前实车调试链路：Flutter Web 通过 HTTP 直连 OpenRD-Driver；
+- 当前实车调试链路：Flutter Web 默认通过云端 `openrd-control-service` 和 RK3588 `openrd-control-agent` 控制 OpenRD-Driver；局域网 HTTP 直连保留为回退；
 - 保留 mock 验证：`dart run tools/mock_control_ws_server.dart`，可连接 `ws://127.0.0.1:8080/control`；
 - ROS2 链路目标：后续将同一套驾驶输入接到 WebSocket bridge -> safety -> ESP32 bridge；
 - 后续升级方向：WebRTC DataChannel；
@@ -236,6 +253,7 @@ vehicle/
 
 ### v0.4：公网与 WebRTC
 
+- 当前已提前完成公网 Phase 1 的部分能力：云端 ZLMediaKit 视频中继、视频按需启停、云端底盘控制 API、RK3588 video/control agent、ESP32 HTTP proxy 回退链路；
 - 引入 WebRTC 视频链路；
 - 引入信令服务；
 - 规划 TURN 中继；
@@ -252,11 +270,13 @@ vehicle/
 ## 当前原则
 
 - 车端采用 ROS2-first 架构，避免后续重复重构；
-- 先跑通局域网闭环，再做公网能力；
+- 局域网闭环是基础验收，当前公网 Phase 1 使用短期 HTTP proxy 快速验证实车远程驾驶体验；
+- 公网链路必须保持车端主动出站，不暴露 ESP32 或 RK3588 局域网端口；
 - 先实现单摄，再扩展双摄；
 - 先实现基础驾驶，再优化控制体验；
 - 先保证安全停车，再追求性能；
 - 视频、控制、电机、安全保护分层设计；
+- 当前公网控制要补齐 token/session 鉴权、驾驶会话互斥、视频 ready gate 和状态面板；
 - 控制协议尽量与具体传输方式解耦，便于后续从 WebSocket 升级到 WebRTC DataChannel；
 - 不把低延迟视频强行塞进 ROS2 topic，视频链路按驾驶体验单独优化。
 
@@ -272,15 +292,22 @@ vehicle/
 - `docs/05_rk3588_deployment.md`：RK3588 原生视频与 ROS2 chroot 部署边界。`vehicle/native_video/README.md` 记录原生视频 runtime，`openrd_video_node` 负责管理它。
 - `docs/06_public_video_control.md`：公网视频按需启停方案，定义云端 control service、车端 video agent、前端启停和 lease 机制。
 - `docs/07_public_drive_control.md`：公网底盘控制方案，定义云端控制通道、RK3588 control agent、安全规则和阶段路线。
+- `docs/08_power_distribution_board.md`：车载电源分配板方案，定义 3S 电池、T 插、DC-DC、RK3588 供电和 PCB 规划。
+- `docs/09_power_distribution_eda_build.md`：电源分配板嘉立创 EDA 绘制手册，定义原理图录入、封装、PCB 坐标、走线和检查流程。
+- `docs/10_video_latency_measurement.md`：视频链路实时延迟测量方案，定义 H.264/H.265 SEI 时间戳、云端 sidecar 解析和前端展示路径。
+- `hardware/openrd_pdb_v0_1/README.md`：车载电源分配板 v0.1 的嘉立创 EDA 标准版源文件、BOM 和导入说明。
 - `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
 - `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。
+- `vehicle/control_agent/README.md`：RK3588 宿主 control agent 的安装和运行方式，用于公网底盘控制。
 
 ## 下一步
 
 建议下一步按以下顺序推进：
 
-- 继续稳定当前 Flutter Web -> OpenRD-Driver HTTP 直连驾驶链路；
-- 固化四电机物理映射、速度上限、急停和电池显示；
-- 在 ESP32 固件中逐步加入控制超时停车和低电保护；
+- 按 `docs/08_power_distribution_board.md` 和 `docs/09_power_distribution_eda_build.md` 把车载电源分配板落成嘉立创 EDA 原理图和 PCB；
+- 继续稳定当前 Flutter Web -> 云端 -> RK3588 -> OpenRD-Driver 公网底盘控制链路；
+- 固化四电机物理映射、速度上限、急停、电池显示和失联停车验证流程；
+- 为公网控制补 token/session 鉴权、驾驶会话互斥、视频 ready gate 和状态面板；
+- 在 ESP32 固件中逐步加入低电保护；
 - 将当前已验证的驾驶输入模型接回 `openrd_web_bridge` -> `openrd_safety` -> `openrd_esp32_bridge`；
 - 决定是否把独立的 `OpenRD-Driver` PlatformIO 工程迁入 `OpenRD/firmware/`，或保留为独立仓库并在 OpenRD 中只保留文档和启动脚本。

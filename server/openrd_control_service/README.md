@@ -1,10 +1,11 @@
 # openrd_control_service
 
-Minimal public control service for OpenRD video-on-demand push.
+Minimal public control service for OpenRD video-on-demand push and public
+chassis control.
 
 It uses only Python standard library modules. The browser calls the public HTTP
-API, and the RK3588 `openrd-video-agent` actively polls `/api/agent/poll` for
-commands. This keeps the vehicle side outbound-only.
+API, and RK3588 agents actively poll `/api/agent/poll` for commands. This keeps
+the vehicle side outbound-only.
 
 ## Run Locally
 
@@ -29,8 +30,24 @@ GET  /api/vehicles/openrd-001/video/status
 POST /api/vehicles/openrd-001/video/start
 POST /api/vehicles/openrd-001/video/renew
 POST /api/vehicles/openrd-001/video/stop
+GET  /api/vehicles/openrd-001/drive/status
+POST /api/vehicles/openrd-001/drive/command
+POST /api/vehicles/openrd-001/drive/stop
+POST /api/vehicles/openrd-001/drive/estop
+POST /api/vehicles/openrd-001/drive/reset_estop
 POST /api/agent/poll
 ```
+
+The same agent polling endpoint is shared by video and drive agents. The server
+routes queued commands by agent name:
+
+```text
+openrd-video-agent   -> video.* command queue
+openrd-control-agent -> drive.* command queue
+```
+
+Drive commands are not accumulated unboundedly. Pending `drive.drive` commands
+are replaced by the latest command so stale driving input does not replay later.
 
 Default media URLs:
 
@@ -67,6 +84,11 @@ OPENRD_CONTROL_VIEWER_TOKEN=
 OPENRD_CONTROL_AGENT_TOKEN=
 OPENRD_CONTROL_DEFAULT_TTL_SEC=120
 OPENRD_CONTROL_AGENT_TIMEOUT_SEC=45
+OPENRD_VIDEO_LATENCY_STATUS_FILE=/tmp/openrd-video-latency.json
+OPENRD_VIDEO_LATENCY_STALE_MS=5000
+OPENRD_DRIVE_COMMAND_TTL_MS=300
+OPENRD_DRIVE_DEFAULT_SPEED_LIMIT=300
+OPENRD_DRIVE_MAX_SPEED_LIMIT=500
 ```
 
 If a token is set, clients must send either:
@@ -80,3 +102,27 @@ or:
 ```text
 X-OpenRD-Token: <token>
 ```
+
+## Video Latency Status
+
+`GET /api/vehicles/openrd-001/video/status` also merges the optional sidecar
+status file from `OPENRD_VIDEO_LATENCY_STATUS_FILE`.
+
+When `tools/video_latency/openrd_video_latency_sidecar.py` is running, the
+response may include:
+
+```json
+{
+  "video_latency_ms": 180,
+  "video_latency_avg_ms": 190,
+  "video_latency_p50_ms": 170,
+  "video_latency_p95_ms": 260,
+  "video_frame_seq": 123456,
+  "video_latency_state": "ok",
+  "video_latency_updated_ms": 1780000000000
+}
+```
+
+If the status file is missing, the service returns
+`video_latency_state=unknown`. If the file is stale, it returns
+`video_latency_state=stale` instead of showing an old latency value as current.

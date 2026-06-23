@@ -15,6 +15,7 @@
 - `enter_openrd_chroot.sh`：进入 chroot，并自动 source ROS2/OpenRD 环境；
 - `build_openrd_ros2_ws.sh`：在 chroot 内构建 `vehicle/ros2_ws`；
 - `install_openrd_video_service.sh`：在宿主 Debian 安装原生视频 systemd 服务、默认云端 RTMP publisher 参数、断流 watchdog 和最小 sudoers 权限；
+- `install_openrd_control_agent.sh`：在宿主 Debian 安装公网底盘控制 agent，把云端 drive 命令转发到 ESP32 OpenRD-Driver；
 - `configure_openrd_mediamtx.sh`：把 MediaMTX 固化为 `live` / `live-front` / `live-rear` / `openrd` publisher 路径，关闭 WebRTC 接口地址自动枚举，并宣告稳定板端地址；
 - `run_openrd_ros2_smoke_test.sh`：启动 launch，发布测试控制命令，观察 ESP32 dry-run 状态。
 - `run_openrd_video_smoke_test.sh`：启动 launch，通过 ROS2 service 验证原生视频 runtime 启停。

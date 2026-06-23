@@ -1,0 +1,465 @@
+#!/usr/bin/env python3
+"""OpenRD RK3588 public drive control agent.
+
+The agent runs on the RK3588 host OS and actively polls the public OpenRD
+control service. It receives whitelisted drive commands and forwards safe motor
+targets to the ESP32 OpenRD-Driver HTTP API on the vehicle LAN.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import re
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any
+
+
+DEFAULT_CLOUD_URL = os.environ.get(
+    "OPENRD_DRIVE_AGENT_CLOUD_URL",
+    "http://43.139.25.165:8790",
+).rstrip("/")
+DEFAULT_VEHICLE_ID = os.environ.get("OPENRD_DRIVE_AGENT_VEHICLE_ID", "openrd-001")
+DEFAULT_TOKEN = os.environ.get("OPENRD_DRIVE_AGENT_TOKEN", "")
+DEFAULT_DRIVER_URL = os.environ.get(
+    "OPENRD_DRIVE_AGENT_DRIVER_URL",
+    "http://192.168.100.114",
+).rstrip("/")
+DEFAULT_POLL_WAIT_SEC = float(os.environ.get("OPENRD_DRIVE_AGENT_POLL_WAIT_SEC", "0.12"))
+DEFAULT_STATUS_INTERVAL_SEC = float(
+    os.environ.get("OPENRD_DRIVE_AGENT_STATUS_INTERVAL_SEC", "1.0")
+)
+DEFAULT_COMMAND_TIMEOUT_SEC = float(
+    os.environ.get("OPENRD_DRIVE_AGENT_COMMAND_TIMEOUT_SEC", "0.35")
+)
+DEFAULT_HTTP_TIMEOUT_SEC = float(os.environ.get("OPENRD_DRIVE_AGENT_HTTP_TIMEOUT_SEC", "0.8"))
+DEFAULT_MAX_SPEED = int(os.environ.get("OPENRD_DRIVE_AGENT_MAX_SPEED", "300"))
+DEFAULT_READ_VOL_INTERVAL_SEC = float(
+    os.environ.get("OPENRD_DRIVE_AGENT_READ_VOL_INTERVAL_SEC", "30")
+)
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def int_value(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def float_value(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class DriveAgent:
+    def __init__(
+        self,
+        cloud_url: str,
+        vehicle_id: str,
+        token: str,
+        driver_url: str,
+        poll_wait_sec: float,
+        status_interval_sec: float,
+        command_timeout_sec: float,
+        http_timeout_sec: float,
+        max_speed: int,
+        read_vol_interval_sec: float,
+    ) -> None:
+        self.cloud_url = cloud_url.rstrip("/")
+        self.vehicle_id = vehicle_id
+        self.token = token
+        self.driver_url = driver_url.rstrip("/")
+        self.poll_wait_sec = poll_wait_sec
+        self.status_interval_sec = status_interval_sec
+        self.command_timeout_sec = command_timeout_sec
+        self.http_timeout_sec = http_timeout_sec
+        self.max_speed = max(0, min(max_speed, 1000))
+        self.read_vol_interval_sec = read_vol_interval_sec
+
+        self.lock = threading.RLock()
+        self.send_lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.last_status_at = 0.0
+        self.last_read_vol_at = 0.0
+        self.last_cmd_at = 0.0
+        self.last_cmd_seq = 0
+        self.last_error = ""
+        self.pending_result: dict[str, Any] = {}
+        self.target = [0, 0, 0, 0]
+        self.speed_limit = 0
+        self.estop = False
+        self.active = False
+        self.esp32_online = False
+        self.battery_voltage_v = 0.0
+        self.battery_age_ms = 0
+
+    def run(self) -> int:
+        print(
+            f"openrd-control-agent vehicle={self.vehicle_id} cloud={self.cloud_url} "
+            f"driver={self.driver_url}",
+            flush=True,
+        )
+        self._safe_stop("agent_start")
+        watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
+        watchdog.start()
+
+        try:
+            while not self.stop_event.is_set():
+                try:
+                    response = self._poll()
+                    self._handle_command(response.get("command") or {"type": "noop"})
+                except KeyboardInterrupt:
+                    break
+                except Exception as exc:  # noqa: BLE001 - keep agent alive.
+                    self.last_error = str(exc)
+                    print(f"drive agent error: {exc}", file=sys.stderr, flush=True)
+                    time.sleep(0.2)
+        finally:
+            self.stop_event.set()
+            self._safe_stop("agent_exit")
+        return 0
+
+    def _poll(self) -> dict[str, Any]:
+        status = self._status_if_due()
+        payload: dict[str, Any] = {
+            "vehicle_id": self.vehicle_id,
+            "agent": "openrd-control-agent",
+            "version": "0.1",
+            "wait_sec": self.poll_wait_sec,
+            "status": status,
+        }
+        if self.pending_result:
+            payload["result"] = self.pending_result
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.cloud_url}/api/agent/poll",
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                **({"Authorization": f"Bearer {self.token}"} if self.token else {}),
+            },
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                timeout=max(1.0, self.poll_wait_sec + 0.8),
+            ) as resp:
+                raw = resp.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise RuntimeError(f"cloud returned HTTP {exc.code}: {detail}") from exc
+
+        self.pending_result = {}
+        parsed = json.loads(raw.decode("utf-8"))
+        if not isinstance(parsed, dict) or not parsed.get("ok"):
+            raise RuntimeError(f"invalid cloud response: {parsed!r}")
+        return parsed
+
+    def _handle_command(self, command: dict[str, Any]) -> None:
+        command_type = str(command.get("type") or "noop")
+        if command_type == "noop":
+            return
+
+        request_id = str(command.get("request_id") or "")
+        print(f"drive command {command_type} request_id={request_id}", flush=True)
+        ok = True
+        error = ""
+
+        try:
+            if command_type == "drive.drive":
+                ok, error = self._handle_drive(command)
+            elif command_type == "drive.stop":
+                self._safe_stop("cloud_stop")
+            elif command_type == "drive.estop":
+                with self.lock:
+                    self.estop = True
+                self._safe_stop("cloud_estop")
+            elif command_type == "drive.reset_estop":
+                with self.lock:
+                    self.estop = False
+                self._safe_stop("cloud_reset_estop")
+            elif command_type == "drive.status":
+                pass
+            else:
+                ok, error = False, f"unsupported command: {command_type}"
+        except Exception as exc:  # noqa: BLE001
+            ok, error = False, str(exc)
+            self.last_error = error
+            self._safe_stop("command_error")
+
+        self.pending_result = {
+            "ok": ok,
+            "request_id": request_id,
+            "command": command_type,
+            "last_error": error,
+            "status": self._read_status(force=True),
+        }
+
+    def _handle_drive(self, command: dict[str, Any]) -> tuple[bool, str]:
+        deadline_ms = int_value(command.get("deadline_ms"), 0)
+        if deadline_ms > 0 and deadline_ms < now_ms():
+            self._safe_stop("stale_command")
+            return False, "stale command"
+
+        seq = int_value(command.get("seq"), 0)
+        steering = clamp(float_value(command.get("steering")), -1.0, 1.0)
+        throttle = clamp(float_value(command.get("throttle")), -1.0, 1.0)
+        brake = clamp(float_value(command.get("brake")), 0.0, 1.0)
+        enable = bool(command.get("enable", True))
+        speed_limit = int_value(command.get("speed_limit"), self.max_speed)
+        speed_limit = max(0, min(speed_limit, self.max_speed))
+
+        with self.lock:
+            if self.estop:
+                self._safe_stop("estop_locked")
+                return False, "estop locked"
+
+        if not enable or brake >= 0.5 or speed_limit <= 0:
+            self._safe_stop("drive_disabled")
+            return True, ""
+
+        motors = self._motor_values(steering, throttle, speed_limit)
+        self._send_motors(motors)
+
+        with self.lock:
+            self.target = motors
+            self.speed_limit = speed_limit
+            self.last_cmd_at = time.time()
+            self.last_cmd_seq = seq
+            self.active = any(value != 0 for value in motors)
+            self.last_error = ""
+        return True, ""
+
+    def _motor_values(self, steering: float, throttle: float, speed_limit: int) -> list[int]:
+        left = throttle + steering
+        right = throttle - steering
+        scale = max(1.0, abs(left), abs(right))
+        left /= scale
+        right /= scale
+
+        def motor(value: float) -> int:
+            return int(max(-1000, min(1000, round(value * speed_limit))))
+
+        return [motor(left), motor(left), motor(right), motor(right)]
+
+    def _send_motors(self, motors: list[int]) -> dict[str, Any]:
+        body = urllib.parse.urlencode(
+            {
+                "m1": motors[0],
+                "m2": motors[1],
+                "m3": motors[2],
+                "m4": motors[3],
+            }
+        ).encode("utf-8")
+        with self.send_lock:
+            raw = self._driver_request(
+                "/control",
+                method="POST",
+                body=body,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        if not raw:
+            return {}
+        parsed = json.loads(raw)
+        if not isinstance(parsed, dict):
+            raise RuntimeError("driver /control returned invalid JSON")
+        return parsed
+
+    def _safe_stop(self, reason: str) -> None:
+        try:
+            self._send_motors([0, 0, 0, 0])
+            error = ""
+            online = True
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+            online = False
+
+        with self.lock:
+            self.target = [0, 0, 0, 0]
+            self.speed_limit = 0
+            self.active = False
+            self.esp32_online = online
+            self.last_error = error
+            if error:
+                print(f"safe stop failed ({reason}): {error}", file=sys.stderr, flush=True)
+
+    def _watchdog_loop(self) -> None:
+        while not self.stop_event.wait(0.05):
+            with self.lock:
+                should_stop = (
+                    self.active
+                    and self.last_cmd_at > 0
+                    and time.time() - self.last_cmd_at > self.command_timeout_sec
+                )
+            if should_stop:
+                print("drive command timeout; stopping motors", flush=True)
+                self._safe_stop("command_timeout")
+
+    def _status_if_due(self) -> dict[str, Any]:
+        current = time.time()
+        if current - self.last_status_at >= self.status_interval_sec:
+            return self._read_status(force=True)
+        return self._read_status(force=False)
+
+    def _read_status(self, force: bool = False) -> dict[str, Any]:
+        current = time.time()
+        if force and current - self.last_read_vol_at >= self.read_vol_interval_sec:
+            self._request_read_vol()
+            self.last_read_vol_at = current
+
+        if force:
+            try:
+                raw = self._driver_request("/status", method="GET")
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    self._update_from_driver_status(parsed)
+            except Exception as exc:  # noqa: BLE001
+                self.esp32_online = False
+                self.last_error = str(exc)
+
+        with self.lock:
+            age_ms = int(max(0.0, time.time() - self.last_cmd_at) * 1000)
+            if self.last_cmd_at <= 0:
+                age_ms = 0
+            state = "estop" if self.estop else ("active" if self.active else "idle")
+            if not self.esp32_online:
+                state = "faulted" if self.last_error else "offline"
+            status = {
+                "state": state,
+                "backend": "esp32_http",
+                "driver_url": self.driver_url,
+                "esp32_online": self.esp32_online,
+                "target": list(self.target),
+                "speed_limit": self.speed_limit,
+                "estop": self.estop,
+                "last_cmd_seq": self.last_cmd_seq,
+                "last_cmd_age_ms": age_ms,
+                "battery_profile": "12V_3S",
+                "battery_voltage_v": round(self.battery_voltage_v, 2),
+                "battery_age_ms": self.battery_age_ms,
+                "max_speed": self.max_speed,
+                "command_timeout_ms": int(self.command_timeout_sec * 1000),
+                "last_error": self.last_error,
+                "agent_time_ms": now_ms(),
+            }
+        self.last_status_at = current
+        return status
+
+    def _update_from_driver_status(self, status: dict[str, Any]) -> None:
+        voltage = float_value(status.get("battery_voltage_v"), 0.0)
+        if voltage <= 0:
+            voltage = self._battery_voltage_from_rx(str(status.get("last_motor_rx") or ""))
+
+        target = status.get("target")
+        with self.lock:
+            self.esp32_online = True
+            if isinstance(target, list) and len(target) >= 4:
+                self.target = [int_value(value) for value in target[:4]]
+            if voltage > 0:
+                self.battery_voltage_v = voltage
+            self.battery_age_ms = int_value(status.get("battery_age_ms"), 0)
+            self.last_error = ""
+
+    def _battery_voltage_from_rx(self, raw: str) -> float:
+        match = re.search(r"Battery:([0-9.]+)V", raw, flags=re.IGNORECASE)
+        if not match:
+            return 0.0
+        return float_value(match.group(1), 0.0)
+
+    def _request_read_vol(self) -> None:
+        try:
+            self._driver_request("/read_vol", method="POST", body=b"")
+        except Exception:
+            pass
+
+    def _driver_request(
+        self,
+        path: str,
+        method: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> str:
+        url = f"{self.driver_url}{path}"
+        request = urllib.request.Request(
+            url,
+            data=body,
+            method=method,
+            headers={"Accept": "application/json", **(headers or {})},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.http_timeout_sec) as resp:
+                status = resp.status
+                raw = resp.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")
+            raise RuntimeError(f"driver HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"driver request failed: {exc}") from exc
+
+        if status < 200 or status >= 300:
+            raise RuntimeError(f"driver HTTP {status}: {raw}")
+        return raw
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="OpenRD RK3588 drive control agent")
+    parser.add_argument("--cloud-url", default=DEFAULT_CLOUD_URL)
+    parser.add_argument("--vehicle-id", default=DEFAULT_VEHICLE_ID)
+    parser.add_argument("--token", default=DEFAULT_TOKEN)
+    parser.add_argument("--driver-url", default=DEFAULT_DRIVER_URL)
+    parser.add_argument("--poll-wait-sec", type=float, default=DEFAULT_POLL_WAIT_SEC)
+    parser.add_argument(
+        "--status-interval-sec",
+        type=float,
+        default=DEFAULT_STATUS_INTERVAL_SEC,
+    )
+    parser.add_argument(
+        "--command-timeout-sec",
+        type=float,
+        default=DEFAULT_COMMAND_TIMEOUT_SEC,
+    )
+    parser.add_argument("--http-timeout-sec", type=float, default=DEFAULT_HTTP_TIMEOUT_SEC)
+    parser.add_argument("--max-speed", type=int, default=DEFAULT_MAX_SPEED)
+    parser.add_argument(
+        "--read-vol-interval-sec",
+        type=float,
+        default=DEFAULT_READ_VOL_INTERVAL_SEC,
+    )
+    args = parser.parse_args()
+
+    agent = DriveAgent(
+        cloud_url=args.cloud_url,
+        vehicle_id=args.vehicle_id,
+        token=args.token,
+        driver_url=args.driver_url,
+        poll_wait_sec=args.poll_wait_sec,
+        status_interval_sec=args.status_interval_sec,
+        command_timeout_sec=args.command_timeout_sec,
+        http_timeout_sec=args.http_timeout_sec,
+        max_speed=args.max_speed,
+        read_vol_interval_sec=args.read_vol_interval_sec,
+    )
+    return agent.run()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -10,7 +10,9 @@ OpenRD 是一个开放式远程驾驶项目，当前目标是使用正点原子 
 
 ## 当前目标
 
-当前阶段只面向局域网 MVP，目标不是一次性完成所有能力，而是先跑通最小驾驶闭环。
+OpenRD 的基础 v0.1 目标是局域网最小驾驶闭环，目标不是一次性完成所有能力，而是先让控制、安全、下位机和视频形成可验证链路。
+
+当前实车调试已经在基础 v0.1 目标之外推进到公网 Phase 1：前端默认通过云端 `openrd-control-service`，再由 RK3588 `openrd-control-agent` 主动轮询云端命令，并转发到 ESP32 OpenRD-Driver HTTP API。局域网直连 ESP32 仍保留为回退调试路径；ROS2 WebSocket -> safety -> ESP32 UART 是正式架构目标，尚未替代当前公网 HTTP proxy 链路。
 
 MVP 目标：
 
@@ -23,12 +25,12 @@ MVP 目标：
 - 控制链路中断或超时时，小车可以自动停车；
 - 单路摄像头视频可以回传到控制端用于辅助驾驶。
 
-## 当前不做什么
+## v0.1 不做什么
 
-为了降低第一阶段复杂度，以下内容不纳入 v0.1 MVP：
+为了降低基础 v0.1 复杂度，以下内容不纳入局域网 MVP 验收。公网视频和公网底盘控制已经作为独立 Phase 1 文档推进，分别见 `docs/06_public_video_control.md` 和 `docs/07_public_drive_control.md`。
 
-- 不做公网远程驾驶；
-- 不做 TURN/STUN/WebRTC 公网穿透；
+- v0.1 不要求公网远程驾驶；
+- v0.1 不要求 TURN/STUN/WebRTC 公网穿透；
 - 不做双摄同时回传；
 - 不做 YOLO/RKNN 视觉检测；
 - 不做自动驾驶或路径规划；
@@ -52,11 +54,11 @@ MVP 目标：
 OpenRD 当前按以下层次组织：
 
 - `frontend/`：Flutter 控制端，负责 UI、手柄/触屏输入、视频显示和控制命令发送；
-- `vehicle/`：RK3588 ROS2 workspace，负责 WebSocket bridge、安全状态机、ESP32 串口桥接、状态聚合、后续视频管理与视觉检测；
+- `vehicle/`：RK3588 ROS2 workspace、原生视频 runtime、video agent 和 control agent；ROS2 workspace 负责 WebSocket bridge、安全状态机、ESP32 串口桥接、状态聚合，宿主 agent 负责当前公网视频/底盘控制闭环；
 - `firmware/`：ESP32 固件，负责电机控制、超时停车、底层安全保护；
-- `server/`：后续信令、中转或控制服务，v0.1 可为空；
+- `server/`：当前包含无第三方依赖的 `openrd-control-service`，负责公网视频按需启停和公网底盘控制命令转发；
 - `docs/`：项目文档、协议、架构和实施计划；
-- `infra/`：公网和部署相关配置，v0.1 可为空；
+- `infra/`：systemd、udev、sudoers、云端视频中继和部署相关配置；
 - `models/`：后续 YOLO/RKNN 模型文件和转换说明；
 - `tools/`：调试、测试、部署辅助工具。
 
@@ -86,7 +88,8 @@ OpenRD 车端从 v0.1 开始采用 ROS2-first 架构。
 - 控制协议与传输方式解耦；
 - v0.1 使用 WebSocket，未来可升级 WebRTC DataChannel；
 - v0.1 使用单摄，未来可扩展双摄；
-- v0.1 使用局域网，未来可扩展公网；
+- v0.1 局域网闭环是基础目标；当前公网 Phase 1 通过云端 HTTP API 和车端主动轮询 agent 先验证远程驾驶体验；
+- 公网控制不能暴露 ESP32 或 RK3588 局域网端口，车端必须主动出站连接云端；
 - 车端节点优先使用 C++ / `rclcpp`。
 
 ## MVP 验收标准
@@ -123,7 +126,8 @@ v0.1 MVP 通过需要满足以下条件：
 - 车端采用 ROS2-first 架构；
 - 车端节点优先使用 C++ / `rclcpp`；
 - 控制端使用 Flutter 单工程支持 Web、Android、iOS；
-- 控制链路 v0.1 使用 WebSocket；
+- 基础 ROS2 控制链路 v0.1 规划使用 WebSocket；
+- 当前公网底盘控制默认使用云端 HTTP API + RK3588 `openrd-control-agent` long-poll + ESP32 OpenRD-Driver HTTP proxy；
 - 电机控制使用 ESP32 下位机；
-- RK3588 与 ESP32 优先使用 UART 通信；
-- 公网、WebRTC、YOLO 放到后续阶段。
+- RK3588 与 ESP32 的正式链路优先使用 UART 通信，当前公网 Phase 1 短期复用 ESP32 OpenRD-Driver HTTP API；
+- WebRTC、YOLO 和 ROS2 正式公网控制链路放到后续阶段。

@@ -1,3 +1,39 @@
+class VideoLatencySnapshot {
+  const VideoLatencySnapshot({
+    required this.state,
+    this.currentMs,
+    this.avgMs,
+    this.p50Ms,
+    this.p95Ms,
+    this.frameSeq,
+    this.updatedMs,
+    this.error,
+  });
+
+  const VideoLatencySnapshot.unknown()
+    : state = 'unknown',
+      currentMs = null,
+      avgMs = null,
+      p50Ms = null,
+      p95Ms = null,
+      frameSeq = null,
+      updatedMs = null,
+      error = null;
+
+  final String state;
+  final int? currentMs;
+  final int? avgMs;
+  final int? p50Ms;
+  final int? p95Ms;
+  final int? frameSeq;
+  final int? updatedMs;
+  final String? error;
+
+  bool get hasData => state == 'ok' && currentMs != null;
+  String get summaryLabel => hasData ? '${currentMs}ms' : '未接入';
+  String get detailLabel => summaryLabel;
+}
+
 class VideoControlSnapshot {
   const VideoControlSnapshot({
     required this.ok,
@@ -7,6 +43,7 @@ class VideoControlSnapshot {
     required this.playUrl,
     required this.lastError,
     required this.leaseExpiresInSec,
+    required this.videoLatency,
   });
 
   final bool ok;
@@ -16,6 +53,7 @@ class VideoControlSnapshot {
   final String playUrl;
   final String lastError;
   final int leaseExpiresInSec;
+  final VideoLatencySnapshot videoLatency;
 
   bool get running => videoState == 'running' || serviceActive;
 }
@@ -33,6 +71,7 @@ class VideoControlClient {
       playUrl: '',
       lastError: 'Video cloud control is only implemented for Web',
       leaseExpiresInSec: 0,
+      videoLatency: VideoLatencySnapshot.unknown(),
     );
   }
 

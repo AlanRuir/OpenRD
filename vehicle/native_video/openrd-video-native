@@ -40,6 +40,12 @@ RTSP_URL=${OPENRD_VIDEO_RTSP_URL:-rtsp://127.0.0.1:8554/live}
 RTMP_URL=${OPENRD_VIDEO_RTMP_URL:-rtmp://43.139.25.165:1935/live/openrd}
 RTMP_HEALTHCHECK_URL=${OPENRD_VIDEO_RTMP_HEALTHCHECK_URL:-}
 HLS_HEALTHCHECK_URL=${OPENRD_VIDEO_HLS_HEALTHCHECK_URL:-}
+PYTHON_BIN=${OPENRD_VIDEO_PYTHON:-python3}
+FFMPEG_BIN=${OPENRD_VIDEO_FFMPEG:-ffmpeg}
+SEI_FILTER=${OPENRD_VIDEO_SEI_FILTER:-"$SCRIPT_DIR/../../tools/video_latency/openrd_h264_sei_filter.py"}
+SEI_SOURCE_ID=${OPENRD_VIDEO_SEI_SOURCE_ID:-openrd-uvc}
+SEI_IDR_ONLY=${OPENRD_VIDEO_SEI_IDR_ONLY:-0}
+SEI_FILTER_STATS_INTERVAL_SEC=${OPENRD_VIDEO_SEI_FILTER_STATS_INTERVAL_SEC:-5}
 RTSP_PROTOCOLS=${OPENRD_VIDEO_RTSP_PROTOCOLS:-tcp}
 RTSP_LATENCY_MS=${OPENRD_VIDEO_RTSP_LATENCY_MS:-100}
 MPEGTS_HOST=${OPENRD_VIDEO_MPEGTS_HOST:-127.0.0.1}
@@ -73,8 +79,8 @@ OpenRD Native Video Runtime v0.1
   pipeline  打印当前参数对应的 gst-launch 命令。
 
 选项:
-  --mode fakesink|file|mpegts|rtp|rtsp|rtmp
-                           输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX；rtmp 表示推公网 RTMP 中继。
+  --mode fakesink|file|mpegts|rtp|rtsp|rtmp|rtmp-sei
+                           输出模式，默认 fakesink。mpegts 表示推 UDP MPEG-TS 给 MediaMTX；rtp 表示推 RTP/UDP 给 MediaMTX；rtmp 表示推公网 RTMP 中继；rtmp-sei 表示编码后插入 OpenRD SEI 再用 ffmpeg 推 RTMP。
   --device PATH|auto       V4L2 设备；`auto` 会优先选择 UVC 摄像头，仍保留 CSI 节点作为可选回退。
   --input-format nv12|mjpg 摄像头输入格式，默认 mjpg。
   --mjpeg-decoder software|mpp
@@ -207,7 +213,7 @@ validate_port() {
 
 validate_args() {
   case "$MODE" in
-    fakesink|file|mpegts|rtp|rtsp|rtmp) ;;
+    fakesink|file|mpegts|rtp|rtsp|rtmp|rtmp-sei) ;;
     webrtc)
       echo "mode '$MODE' is reserved for later versions" >&2
       exit 2 ;;
@@ -241,8 +247,8 @@ validate_args() {
     exit 2
   fi
 
-  if [[ "$MODE" == "rtmp" && ! "$RTMP_URL" =~ ^rtmp(s)?:// ]]; then
-    echo "rtmp mode requires an rtmp:// or rtmps:// URL: $RTMP_URL" >&2
+  if [[ "$MODE" =~ ^rtmp(-sei)?$ && ! "$RTMP_URL" =~ ^rtmp(s)?:// ]]; then
+    echo "$MODE mode requires an rtmp:// or rtmps:// URL: $RTMP_URL" >&2
     exit 2
   fi
 
@@ -350,6 +356,28 @@ check_dependencies() {
 
     gst-inspect-1.0 rtmpsink >/dev/null 2>&1 || {
       echo "rtmpsink not found; install GStreamer RTMP sink plugin" >&2
+      exit 1
+    }
+  fi
+
+  if [[ "$MODE" == "rtmp-sei" ]]; then
+    gst-inspect-1.0 fdsink >/dev/null 2>&1 || {
+      echo "fdsink not found; install GStreamer core elements" >&2
+      exit 1
+    }
+
+    command -v "$PYTHON_BIN" >/dev/null || {
+      echo "$PYTHON_BIN not found; Python 3 is required for OpenRD SEI injection" >&2
+      exit 1
+    }
+
+    [[ -f "$SEI_FILTER" ]] || {
+      echo "OpenRD SEI filter not found: $SEI_FILTER" >&2
+      exit 1
+    }
+
+    command -v "$FFMPEG_BIN" >/dev/null || {
+      echo "$FFMPEG_BIN not found; ffmpeg is required for rtmp-sei mode" >&2
       exit 1
     }
   fi
@@ -593,8 +621,66 @@ append_source_pipeline() {
   esac
 }
 
+quote_args() {
+  local quoted=()
+  local arg
+  for arg in "$@"; do
+    quoted+=("$(printf '%q' "$arg")")
+  done
+  printf '%s ' "${quoted[@]}"
+}
+
+build_rtmp_sei_pipeline() {
+  local pipeline_device=${RESOLVED_DEVICE:-$DEVICE}
+  local gst_cmd filter_cmd ffmpeg_cmd
+
+  PIPELINE=(
+    gst-launch-1.0 -q -e
+  )
+  append_source_pipeline "$pipeline_device" "$BUFFERS"
+  PIPELINE+=(
+    ! mpph264enc "bps=$BITRATE" "gop=$GOP" "profile=$H264_PROFILE" "header-mode=$H264_HEADER_MODE"
+    ! queue
+    ! h264parse config-interval=1
+    ! "video/x-h264,stream-format=byte-stream,alignment=au"
+    ! fdsink fd=1 sync=false
+  )
+  gst_cmd=$(quote_args "${PIPELINE[@]}")
+
+  PIPELINE=(
+    "$PYTHON_BIN" -u "$SEI_FILTER"
+    --source-id "$SEI_SOURCE_ID"
+    --stats-interval-sec "$SEI_FILTER_STATS_INTERVAL_SEC"
+  )
+  if [[ "$SEI_IDR_ONLY" == "1" || "$SEI_IDR_ONLY" == "true" ]]; then
+    PIPELINE+=(--idr-only)
+  fi
+  filter_cmd=$(quote_args "${PIPELINE[@]}")
+
+  PIPELINE=(
+    "$FFMPEG_BIN"
+    -hide_banner
+    -loglevel warning
+    -fflags nobuffer
+    -f h264
+    -i -
+    -an
+    -c:v copy
+    -f flv
+    "$RTMP_URL"
+  )
+  ffmpeg_cmd=$(quote_args "${PIPELINE[@]}")
+
+  PIPELINE=(bash -c "set -o pipefail; $gst_cmd| $filter_cmd| $ffmpeg_cmd")
+}
+
 build_pipeline() {
   local pipeline_device=${RESOLVED_DEVICE:-$DEVICE}
+
+  if [[ "$MODE" == "rtmp-sei" ]]; then
+    build_rtmp_sei_pipeline
+    return 0
+  fi
 
   PIPELINE=(
     gst-launch-1.0 -e
@@ -619,6 +705,8 @@ build_pipeline() {
       PIPELINE+=(! "video/x-h264,stream-format=byte-stream,alignment=au" ! rtspclientsink "location=$RTSP_URL" "protocols=$RTSP_PROTOCOLS" "latency=$RTSP_LATENCY_MS") ;;
     rtmp)
       PIPELINE+=(! "video/x-h264,stream-format=avc,alignment=au" ! flvmux streamable=true ! rtmpsink "location=$RTMP_URL live=1") ;;
+    rtmp-sei)
+      ;;
   esac
 }
 
@@ -675,6 +763,12 @@ DEVICE=$(state_value DEVICE "$DEVICE")
   RTSP_URL=$(state_value RTSP_URL "$RTSP_URL")
   RTMP_URL=$(state_value RTMP_URL "$RTMP_URL")
   RTMP_HEALTHCHECK_URL=$(state_value RTMP_HEALTHCHECK_URL "$RTMP_HEALTHCHECK_URL")
+  PYTHON_BIN=$(state_value PYTHON_BIN "$PYTHON_BIN")
+  FFMPEG_BIN=$(state_value FFMPEG_BIN "$FFMPEG_BIN")
+  SEI_FILTER=$(state_value SEI_FILTER "$SEI_FILTER")
+  SEI_SOURCE_ID=$(state_value SEI_SOURCE_ID "$SEI_SOURCE_ID")
+  SEI_IDR_ONLY=$(state_value SEI_IDR_ONLY "$SEI_IDR_ONLY")
+  SEI_FILTER_STATS_INTERVAL_SEC=$(state_value SEI_FILTER_STATS_INTERVAL_SEC "$SEI_FILTER_STATS_INTERVAL_SEC")
   RTSP_PROTOCOLS=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
   RTSP_LATENCY_MS=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
   MPEGTS_HOST=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
@@ -719,6 +813,12 @@ H264_HEADER_MODE=$H264_HEADER_MODE
 RTSP_URL=$RTSP_URL
 RTMP_URL=$RTMP_URL
 RTMP_HEALTHCHECK_URL=$RTMP_HEALTHCHECK_URL
+PYTHON_BIN=$PYTHON_BIN
+FFMPEG_BIN=$FFMPEG_BIN
+SEI_FILTER=$SEI_FILTER
+SEI_SOURCE_ID=$SEI_SOURCE_ID
+SEI_IDR_ONLY=$SEI_IDR_ONLY
+SEI_FILTER_STATS_INTERVAL_SEC=$SEI_FILTER_STATS_INTERVAL_SEC
 RTSP_PROTOCOLS=$RTSP_PROTOCOLS
 RTSP_LATENCY_MS=$RTSP_LATENCY_MS
 MPEGTS_HOST=$MPEGTS_HOST
@@ -755,7 +855,7 @@ status_text() {
   fi
 
   if [[ -f "$STATE_FILE" ]]; then
-    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|INPUT_FORMAT|MJPEG_DECODER|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTMP_URL|RTMP_HEALTHCHECK_URL|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
+    grep -E '^(MODE|DEVICE|ACTUAL_DEVICE|INPUT_FORMAT|MJPEG_DECODER|WIDTH|HEIGHT|FPS|BITRATE|GOP|OUTPUT|H264_PROFILE|H264_HEADER_MODE|RTSP_URL|RTMP_URL|RTMP_HEALTHCHECK_URL|PYTHON_BIN|FFMPEG_BIN|SEI_FILTER|SEI_SOURCE_ID|SEI_IDR_ONLY|SEI_FILTER_STATS_INTERVAL_SEC|RTSP_PROTOCOLS|RTSP_LATENCY_MS|MPEGTS_HOST|MPEGTS_PORT|RTP_HOST|RTP_PORT|RTP_PAYLOAD_TYPE|RTP_MTU|LOG_FILE|MESSAGE)=' "$STATE_FILE" | sed 's/^/  /'
   else
     echo "  state_file: missing"
   fi
@@ -777,7 +877,7 @@ status_json() {
     fi
   fi
 
-  local mode device actual_device input_format mjpeg_decoder width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtmp_url rtmp_healthcheck_url rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
+  local mode device actual_device input_format mjpeg_decoder width height fps bitrate gop output h264_profile h264_header_mode rtsp_url rtmp_url rtmp_healthcheck_url python_bin ffmpeg_bin sei_filter sei_source_id sei_idr_only sei_filter_stats_interval_sec rtsp_protocols rtsp_latency_ms mpegts_host mpegts_port rtp_host rtp_port rtp_payload_type rtp_mtu log_file message
   mode=$(state_value MODE "$MODE")
   device=$(state_value DEVICE "$DEVICE")
   actual_device=$(state_value ACTUAL_DEVICE "$(actual_device)")
@@ -794,6 +894,12 @@ status_json() {
   rtsp_url=$(state_value RTSP_URL "$RTSP_URL")
   rtmp_url=$(state_value RTMP_URL "$RTMP_URL")
   rtmp_healthcheck_url=$(state_value RTMP_HEALTHCHECK_URL "$RTMP_HEALTHCHECK_URL")
+  python_bin=$(state_value PYTHON_BIN "$PYTHON_BIN")
+  ffmpeg_bin=$(state_value FFMPEG_BIN "$FFMPEG_BIN")
+  sei_filter=$(state_value SEI_FILTER "$SEI_FILTER")
+  sei_source_id=$(state_value SEI_SOURCE_ID "$SEI_SOURCE_ID")
+  sei_idr_only=$(state_value SEI_IDR_ONLY "$SEI_IDR_ONLY")
+  sei_filter_stats_interval_sec=$(state_value SEI_FILTER_STATS_INTERVAL_SEC "$SEI_FILTER_STATS_INTERVAL_SEC")
   rtsp_protocols=$(state_value RTSP_PROTOCOLS "$RTSP_PROTOCOLS")
   rtsp_latency_ms=$(state_value RTSP_LATENCY_MS "$RTSP_LATENCY_MS")
   mpegts_host=$(state_value MPEGTS_HOST "$MPEGTS_HOST")
@@ -809,7 +915,7 @@ status_json() {
   fi
 
   cat <<EOF
-{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","input_format":"$(json_escape "$input_format")","mjpeg_decoder":"$(json_escape "$mjpeg_decoder")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtmp_url":"$(json_escape "$rtmp_url")","rtmp_healthcheck_url":"$(json_escape "$rtmp_healthcheck_url")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
+{"state":"$state","runtime_running":$runtime_running,"pid":${pid:-0},"mode":"$(json_escape "$mode")","device":"$(json_escape "$device")","actual_device":"$(json_escape "$actual_device")","input_format":"$(json_escape "$input_format")","mjpeg_decoder":"$(json_escape "$mjpeg_decoder")","width":$width,"height":$height,"fps":$fps,"bitrate":$bitrate,"gop":$gop,"output":"$(json_escape "$output")","h264_profile":"$(json_escape "$h264_profile")","h264_header_mode":"$(json_escape "$h264_header_mode")","rtsp_url":"$(json_escape "$rtsp_url")","rtmp_url":"$(json_escape "$rtmp_url")","rtmp_healthcheck_url":"$(json_escape "$rtmp_healthcheck_url")","python_bin":"$(json_escape "$python_bin")","ffmpeg_bin":"$(json_escape "$ffmpeg_bin")","sei_filter":"$(json_escape "$sei_filter")","sei_source_id":"$(json_escape "$sei_source_id")","sei_idr_only":"$(json_escape "$sei_idr_only")","sei_filter_stats_interval_sec":"$(json_escape "$sei_filter_stats_interval_sec")","rtsp_protocols":"$(json_escape "$rtsp_protocols")","rtsp_latency_ms":$rtsp_latency_ms,"mpegts_host":"$(json_escape "$mpegts_host")","mpegts_port":$mpegts_port,"rtp_host":"$(json_escape "$rtp_host")","rtp_port":$rtp_port,"rtp_payload_type":$rtp_payload_type,"rtp_mtu":$rtp_mtu,"log_file":"$(json_escape "$log_file")","message":"$(json_escape "$message")"}
 EOF
 }
 
@@ -827,7 +933,7 @@ start_runtime() {
 
   build_pipeline
   echo "[$(date -Is)] starting OpenRD native video runtime" >> "$LOG_FILE"
-  echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+  echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT} sei_source_id=$SEI_SOURCE_ID" >> "$LOG_FILE"
   printf 'pipeline=' >> "$LOG_FILE"
   printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
   printf '\n' >> "$LOG_FILE"
@@ -865,7 +971,7 @@ stream_health_ok() {
     rtp)
       return 0
       ;;
-    rtmp)
+    rtmp|rtmp-sei)
       if [[ -z "$RTMP_HEALTHCHECK_URL" ]]; then
         return 0
       fi
@@ -989,7 +1095,7 @@ supervise_runtime() {
   while true; do
     build_pipeline
     echo "[$(date -Is)] starting OpenRD native video runtime (supervised)" >> "$LOG_FILE"
-    echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT}" >> "$LOG_FILE"
+    echo "device=$DEVICE actual_device=$(actual_device) input=$INPUT_FORMAT mjpeg_decoder=$MJPEG_DECODER mode=$MODE ${WIDTH}x${HEIGHT}@${FPS} bitrate=$BITRATE rtsp_url=$RTSP_URL rtmp_url=$RTMP_URL mpegts=${MPEGTS_HOST}:${MPEGTS_PORT} rtp=${RTP_HOST}:${RTP_PORT} sei_source_id=$SEI_SOURCE_ID" >> "$LOG_FILE"
     printf 'pipeline=' >> "$LOG_FILE"
     printf '%q ' "${PIPELINE[@]}" >> "$LOG_FILE"
     printf '\n' >> "$LOG_FILE"

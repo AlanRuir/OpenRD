@@ -3,6 +3,115 @@
 import 'dart:convert';
 import 'dart:html' as html;
 
+int _intValue(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+int? _nullableIntValue(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  return int.tryParse(value?.toString() ?? '');
+}
+
+class VideoLatencySnapshot {
+  const VideoLatencySnapshot({
+    required this.state,
+    this.currentMs,
+    this.avgMs,
+    this.p50Ms,
+    this.p95Ms,
+    this.frameSeq,
+    this.updatedMs,
+    this.error,
+  });
+
+  const VideoLatencySnapshot.unknown()
+    : state = 'unknown',
+      currentMs = null,
+      avgMs = null,
+      p50Ms = null,
+      p95Ms = null,
+      frameSeq = null,
+      updatedMs = null,
+      error = null;
+
+  factory VideoLatencySnapshot.fromJson(Map<String, dynamic> json) {
+    return VideoLatencySnapshot(
+      state: (json['video_latency_state'] ?? 'unknown').toString(),
+      currentMs: _nullableIntValue(json['video_latency_ms']),
+      avgMs: _nullableIntValue(json['video_latency_avg_ms']),
+      p50Ms: _nullableIntValue(json['video_latency_p50_ms']),
+      p95Ms: _nullableIntValue(json['video_latency_p95_ms']),
+      frameSeq: _nullableIntValue(json['video_frame_seq']),
+      updatedMs: _nullableIntValue(json['video_latency_updated_ms']),
+      error: (json['video_latency_error'] ?? '').toString(),
+    );
+  }
+
+  final String state;
+  final int? currentMs;
+  final int? avgMs;
+  final int? p50Ms;
+  final int? p95Ms;
+  final int? frameSeq;
+  final int? updatedMs;
+  final String? error;
+
+  bool get hasData => state == 'ok' && currentMs != null;
+
+  String get summaryLabel {
+    if (hasData) {
+      return '${currentMs}ms';
+    }
+    return stateLabel;
+  }
+
+  String get detailLabel {
+    if (!hasData) {
+      final errorText = error == null || error!.isEmpty ? '' : ' · $error';
+      return '$stateLabel$errorText';
+    }
+    final parts = <String>[
+      'current=${currentMs}ms',
+      if (avgMs != null) 'avg=${avgMs}ms',
+      if (p50Ms != null) 'p50=${p50Ms}ms',
+      if (p95Ms != null) 'p95=${p95Ms}ms',
+      if (frameSeq != null) 'seq=$frameSeq',
+      'state=$state',
+    ];
+    return parts.join(' ');
+  }
+
+  String get stateLabel {
+    switch (state) {
+      case 'ok':
+        return currentMs == null ? '测量中' : '${currentMs}ms';
+      case 'no_stream':
+        return '无视频';
+      case 'no_sei':
+        return '无 SEI';
+      case 'clock_unsynced':
+        return '时钟异常';
+      case 'stale':
+        return '已过期';
+      case 'error':
+        return '异常';
+      default:
+        return '未接入';
+    }
+  }
+}
+
 class VideoControlSnapshot {
   const VideoControlSnapshot({
     required this.ok,
@@ -12,6 +121,7 @@ class VideoControlSnapshot {
     required this.playUrl,
     required this.lastError,
     required this.leaseExpiresInSec,
+    required this.videoLatency,
   });
 
   factory VideoControlSnapshot.fromJson(Map<String, dynamic> json) {
@@ -24,6 +134,7 @@ class VideoControlSnapshot {
       playUrl: (json['play_url'] ?? '').toString(),
       lastError: (json['last_error'] ?? json['error'] ?? '').toString(),
       leaseExpiresInSec: _intValue(json['lease_expires_in_sec']),
+      videoLatency: VideoLatencySnapshot.fromJson(json),
     );
   }
 
@@ -34,21 +145,12 @@ class VideoControlSnapshot {
   final String playUrl;
   final String lastError;
   final int leaseExpiresInSec;
+  final VideoLatencySnapshot videoLatency;
 
   bool get running => videoState == 'running' || serviceActive;
   bool get starting => videoState == 'starting';
   bool get stopped => videoState == 'stopped';
   bool get offline => videoState == 'offline' || !vehicleOnline;
-
-  static int _intValue(Object? value) {
-    if (value is int) {
-      return value;
-    }
-    if (value is num) {
-      return value.toInt();
-    }
-    return int.tryParse(value?.toString() ?? '') ?? 0;
-  }
 }
 
 class VideoControlClient {

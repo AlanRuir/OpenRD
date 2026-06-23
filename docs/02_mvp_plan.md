@@ -1,10 +1,10 @@
 ﻿# 02 MVP 实施计划
 
-本文档定义 OpenRD v0.1 局域网基础驾驶闭环的实施顺序、交付物和验收标准。
+本文档定义 OpenRD v0.1 局域网基础驾驶闭环的实施顺序、交付物和验收标准。它是基础 MVP 计划，不代表当前所有已实现能力；当前代码和实车调试已经在此基础上新增公网视频按需启停和公网底盘控制 Phase 1，分别见 `docs/06_public_video_control.md` 和 `docs/07_public_drive_control.md`。
 
 ## MVP 范围
 
-v0.1 只解决一个问题：小车可以在局域网内被远程控制，完成前、后、左、右、停。
+v0.1 只解决一个基础问题：小车可以在局域网内被远程控制，完成前、后、左、右、停。
 
 v0.1 包含：
 
@@ -20,9 +20,9 @@ v0.1 包含：
 - 超时停车与急停；
 - 单路视频链路验证。
 
-v0.1 不包含：
+v0.1 原始验收不包含：
 
-- 公网控制；
+- 公网控制；当前公网底盘控制作为独立 Phase 1 已通过 `openrd-control-service` + `openrd-control-agent` + ESP32 HTTP proxy 先行验证；
 - 完整 WebRTC 架构；
 - YOLO 检测；
 - 双摄切换；
@@ -31,6 +31,10 @@ v0.1 不包含：
 - SLAM/Nav2；
 - Flutter 直连 ROS2 DDS；
 - 驾驶视频的 ROS2 image topic 主链路。
+
+## 当前实现状态
+
+截至当前阶段，局域网 ESP32/OpenRD-Driver HTTP 直连链路已作为回退路径保留；公网底盘控制主链路已新增云端控制服务、RK3588 `openrd-control-agent`、systemd 安装文件和 Flutter 前端云端 HTTP 控制适配。ROS2 workspace 已建立，`openrd_safety_node` 有基础安全逻辑，但 `openrd_web_bridge_node` 仍是骨架，`openrd_esp32_bridge_node` 默认 `dry_run: true`，尚未替代当前实车 HTTP proxy 链路。
 
 ## 推荐实施顺序
 

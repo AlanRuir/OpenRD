@@ -7,6 +7,8 @@ import 'dart:ui_web' as ui_web;
 
 import 'package:flutter/material.dart';
 
+import 'video_stream_metrics.dart';
+
 class OpenRdStreamView extends StatefulWidget {
   const OpenRdStreamView({
     super.key,
@@ -17,6 +19,7 @@ class OpenRdStreamView extends StatefulWidget {
     required this.placeholder,
     this.onReady,
     this.onError,
+    this.onLatency,
   });
 
   final String url;
@@ -26,6 +29,7 @@ class OpenRdStreamView extends StatefulWidget {
   final Widget placeholder;
   final VoidCallback? onReady;
   final ValueChanged<String>? onError;
+  final ValueChanged<VideoPlaybackLatencySnapshot>? onLatency;
 
   @override
   State<OpenRdStreamView> createState() => _OpenRdStreamViewState();
@@ -50,6 +54,7 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
     _callbacksByViewType[_viewType] = _StreamCallbacks(
       onReady: widget.onReady,
       onError: widget.onError,
+      onLatency: widget.onLatency,
     );
     _messageSubscription = html.window.onMessage.listen(_handlePlayerMessage);
   }
@@ -60,6 +65,7 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
     _callbacksByViewType[_viewType] = _StreamCallbacks(
       onReady: widget.onReady,
       onError: widget.onError,
+      onLatency: widget.onLatency,
     );
   }
 
@@ -101,6 +107,10 @@ class _OpenRdStreamViewState extends State<OpenRdStreamView> {
     switch (parsed['event']) {
       case 'ready':
         callbacks?.onReady?.call();
+      case 'metrics':
+        callbacks?.onLatency?.call(
+          VideoPlaybackLatencySnapshot.fromJson(parsed),
+        );
       case 'error':
         final message = parsed['message'];
         callbacks?.onError?.call(
@@ -206,18 +216,22 @@ window.addEventListener('load', () => {
   let player = null;
   let readySent = false;
   let errorSent = false;
+  let metricsTimer = null;
 
   const setMessage = (text) => {
     message.textContent = text;
     message.style.display = text ? 'flex' : 'none';
   };
 
-  const notify = (event, text = '') => {
+  const notify = (event, payload = {}) => {
+    const body = payload && typeof payload === 'object'
+      ? payload
+      : { message: String(payload || '') };
     window.parent.postMessage(JSON.stringify({
       source: '$_messageSource',
       viewType: '$escapedViewType',
       event,
-      message: text,
+      ...body,
     }), '*');
   };
 
@@ -240,7 +254,56 @@ window.addEventListener('load', () => {
     notify('error', text);
   };
 
+  const stopMetricsTimer = () => {
+    if (metricsTimer !== null) {
+      window.clearInterval(metricsTimer);
+      metricsTimer = null;
+    }
+  };
+
+  const notifyMetrics = () => {
+    if (!player || !video) {
+      return;
+    }
+
+    const currentTime = Number(video.currentTime || 0);
+    const bufferedEnd = video.buffered && video.buffered.length
+      ? Number(video.buffered.end(video.buffered.length - 1))
+      : null;
+    const seekableEnd = video.seekable && video.seekable.length
+      ? Number(video.seekable.end(video.seekable.length - 1))
+      : null;
+    const liveEdge = [bufferedEnd, seekableEnd]
+      .filter((value) => Number.isFinite(value))
+      .reduce((max, value) => Math.max(max, value), Number.NEGATIVE_INFINITY);
+    const bufferLagMs = Number.isFinite(liveEdge)
+      ? Math.max(0, Math.round((liveEdge - currentTime) * 1000))
+      : null;
+    const seekableLagMs = Number.isFinite(seekableEnd)
+      ? Math.max(0, Math.round((seekableEnd - currentTime) * 1000))
+      : null;
+
+    notify('metrics', {
+      state: video.paused ? 'paused' : (video.readyState >= 2 ? 'playing' : 'waiting'),
+      buffer_lag_ms: bufferLagMs,
+      seekable_lag_ms: seekableLagMs,
+      current_time_sec: currentTime,
+      buffered_end_sec: bufferedEnd,
+      seekable_end_sec: seekableEnd,
+      updated_ms: Date.now(),
+    });
+  };
+
+  const startMetricsTimer = () => {
+    if (metricsTimer !== null) {
+      return;
+    }
+    notifyMetrics();
+    metricsTimer = window.setInterval(notifyMetrics, 500);
+  };
+
   const destroyPlayer = () => {
+    stopMetricsTimer();
     if (player === null) {
       return;
     }
@@ -253,7 +316,12 @@ window.addEventListener('load', () => {
   };
 
   video.muted = $mutedLiteral;
-  video.addEventListener('playing', notifyReady, { once: true });
+  video.addEventListener('playing', () => {
+    notifyReady();
+    startMetricsTimer();
+  });
+  video.addEventListener('pause', stopMetricsTimer);
+  video.addEventListener('ended', stopMetricsTimer);
   video.addEventListener('error', () => notifyError(video.error || 'Video element error'));
 
   try {
@@ -320,8 +388,9 @@ window.addEventListener('load', () => {
 }
 
 class _StreamCallbacks {
-  const _StreamCallbacks({this.onReady, this.onError});
+  const _StreamCallbacks({this.onReady, this.onError, this.onLatency});
 
   final VoidCallback? onReady;
   final ValueChanged<String>? onError;
+  final ValueChanged<VideoPlaybackLatencySnapshot>? onLatency;
 }

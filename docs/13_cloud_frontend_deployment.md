@@ -212,3 +212,37 @@ Video URL: /live/openrd.live.flv
 ## 当前建议
 
 下一步先做 **阶段 1 + 阶段 2**：本地 release build 验证，并把静态控制台部署到云端一个受保护的测试入口。等手机端驾驶模式实现后，再切到同源 `/api` 和 `/live` 反代，并把它作为手机 PWA 的正式入口。
+
+## 2026-07-05 测试部署记录
+
+已完成第一版云端静态部署验证：
+
+- 本地执行 `flutter build web --release --base-href /openrd/`；
+- 将 `frontend/openrd_frontend/build/web/` 打包并部署到云端 `/var/www/openrd`；
+- Caddy 当前仍只监听测试端口 `8080`，未改动服务器已有的 `80/443` derper 服务；
+- 新增测试入口：
+
+```text
+http://43.139.25.165:8080/openrd/
+```
+
+当前 Caddy 8080 路由：
+
+```text
+/openrd/          -> /var/www/openrd 静态 Flutter Web
+/openrd-control/  -> 127.0.0.1:8790 openrd-control-service
+其他路径           -> 127.0.0.1:3005 既有默认反代
+```
+
+已验证：
+
+- `GET /openrd/` 返回 Flutter Web `index.html`；
+- `GET /openrd/main.dart.js` 返回前端主 JS；
+- `GET /openrd-control/health` 返回 `openrd-control-service` 健康状态；
+- Caddy reload 后保持 `active`。
+
+当前限制：
+
+- 测试入口暂未加 Basic Auth；
+- 前端默认 API/视频地址仍主要使用现有公网端口配置；
+- 该入口适合手机访问和前端静态部署验证，但正式控车前仍应补访问控制。

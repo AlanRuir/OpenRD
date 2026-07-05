@@ -7,7 +7,7 @@ import 'dart:math' as math;
 
 enum ControlLinkState { disconnected, connecting, connected, error }
 
-enum _ControlTransport { none, websocket, httpDriver }
+enum _ControlTransport { none, websocket, httpDriver, cloudDrive }
 
 class DriverBatterySnapshot {
   const DriverBatterySnapshot({
@@ -137,13 +137,18 @@ class ControlLink {
   ControlLink({required String endpoint})
     : _snapshot = ControlLinkSnapshot.initial(endpoint);
 
+  static const String _vehicleId = 'openrd-001';
+
   final StreamController<ControlLinkSnapshot> _controller =
       StreamController<ControlLinkSnapshot>.broadcast();
   html.WebSocket? _socket;
   _ControlTransport _transport = _ControlTransport.none;
   String _httpDriverEndpoint = '';
+  String _cloudDriveEndpoint = '';
   int _httpInFlight = 0;
+  int _cloudInFlight = 0;
   Timer? _httpStatusTimer;
+  Timer? _cloudStatusTimer;
   DateTime? _lastReadVolRequestAt;
   ControlLinkSnapshot _snapshot;
   int _sentCount = 0;
@@ -169,7 +174,7 @@ class ControlLink {
     );
 
     if (_isHttpEndpoint(normalizedEndpoint)) {
-      _connectHttpDriver(normalizedEndpoint);
+      _connectHttpEndpoint(normalizedEndpoint);
       return;
     }
 
@@ -290,9 +295,13 @@ class ControlLink {
     _socket = null;
     _transport = _ControlTransport.none;
     _httpDriverEndpoint = '';
+    _cloudDriveEndpoint = '';
     _httpInFlight = 0;
+    _cloudInFlight = 0;
     _httpStatusTimer?.cancel();
     _httpStatusTimer = null;
+    _cloudStatusTimer?.cancel();
+    _cloudStatusTimer = null;
     _lastReadVolRequestAt = null;
     socket?.close();
     if (!emit) {
@@ -313,6 +322,10 @@ class ControlLink {
   }
 
   bool send(DriveControlMessage message) {
+    if (_transport == _ControlTransport.cloudDrive) {
+      return _sendCloudDrive(message);
+    }
+
     if (_transport == _ControlTransport.httpDriver) {
       return _sendHttpDriver(message);
     }
@@ -333,6 +346,88 @@ class ControlLink {
         receivedCount: _receivedCount,
         lastSent: message,
         lastReceived: _snapshot.lastReceived,
+      ),
+    );
+    return true;
+  }
+
+  void _connectHttpEndpoint(String endpoint) {
+    (() async {
+      final handledAsCloud = await _tryConnectCloudDrive(endpoint);
+      if (!handledAsCloud &&
+          _transport != _ControlTransport.cloudDrive &&
+          _cloudDriveEndpoint.isEmpty) {
+        _connectHttpDriver(endpoint);
+      }
+    })();
+  }
+
+  Future<bool> _tryConnectCloudDrive(String endpoint) async {
+    try {
+      final response = await html.HttpRequest.request(
+        _cloudDriveUri(endpoint, 'status').toString(),
+        method: 'GET',
+        requestHeaders: const <String, String>{'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (_transport != _ControlTransport.none) {
+        return true;
+      }
+
+      final raw = response.responseText ?? '';
+      if (!_isOkStatus(response.status ?? 0)) {
+        return _looksLikeCloudEndpoint(endpoint)
+            ? _markCloudConnectError(endpoint, '云端控制 HTTP ${response.status}')
+            : false;
+      }
+
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map ||
+          (!decoded.containsKey('drive_agent_online') &&
+              !decoded.containsKey('drive_state'))) {
+        return false;
+      }
+
+      if (decoded['drive_agent_online'] != true) {
+        return _markCloudConnectError(endpoint, '云端底盘 agent 离线');
+      }
+
+      _transport = _ControlTransport.cloudDrive;
+      _cloudDriveEndpoint = endpoint;
+      _receivedCount += 1;
+      _update(
+        ControlLinkSnapshot(
+          state: ControlLinkState.connected,
+          endpoint: endpoint,
+          lastError: '',
+          sentCount: _sentCount,
+          receivedCount: _receivedCount,
+          lastSent: _snapshot.lastSent,
+          lastReceived: raw,
+          battery: _batteryFromCloudStatus(decoded, _snapshot.battery),
+        ),
+      );
+      _startCloudStatusPolling(endpoint);
+      return true;
+    } catch (error) {
+      if (_looksLikeCloudEndpoint(endpoint)) {
+        return _markCloudConnectError(endpoint, error.toString());
+      }
+      return false;
+    }
+  }
+
+  bool _markCloudConnectError(String endpoint, String error) {
+    _update(
+      ControlLinkSnapshot(
+        state: ControlLinkState.error,
+        endpoint: endpoint,
+        lastError: error,
+        sentCount: _sentCount,
+        receivedCount: _receivedCount,
+        lastSent: _snapshot.lastSent,
+        lastReceived: _snapshot.lastReceived,
+        battery: _snapshot.battery,
       ),
     );
     return true;
@@ -481,6 +576,160 @@ class ControlLink {
     return true;
   }
 
+  bool _sendCloudDrive(DriveControlMessage message) {
+    if (_snapshot.state != ControlLinkState.connected ||
+        _cloudDriveEndpoint.isEmpty) {
+      return false;
+    }
+    if (_cloudInFlight > 0 && !message.stop) {
+      return true;
+    }
+
+    final endpoint = _cloudDriveEndpoint;
+    _sentCount += 1;
+    _cloudInFlight += 1;
+    _update(
+      ControlLinkSnapshot(
+        state: _snapshot.state,
+        endpoint: _snapshot.endpoint,
+        lastError: _snapshot.lastError,
+        sentCount: _sentCount,
+        receivedCount: _receivedCount,
+        lastSent: message,
+        lastReceived: _snapshot.lastReceived,
+        battery: _snapshot.battery,
+      ),
+    );
+
+    (() async {
+      try {
+        final response = await html.HttpRequest.request(
+          _cloudDriveUri(endpoint, 'command').toString(),
+          method: 'POST',
+          requestHeaders: const <String, String>{
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+          },
+          sendData: message.encode(),
+        ).timeout(const Duration(seconds: 3));
+
+        if (_transport != _ControlTransport.cloudDrive ||
+            _cloudDriveEndpoint != endpoint) {
+          return;
+        }
+
+        final raw = response.responseText ?? '';
+        _receivedCount += 1;
+        final decoded = raw.isEmpty ? <String, dynamic>{} : jsonDecode(raw);
+        if (!_isOkStatus(response.status ?? 0) ||
+            decoded is! Map ||
+            decoded['ok'] != true) {
+          final error = decoded is Map
+              ? (decoded['last_error'] ?? decoded['error'] ?? '').toString()
+              : '';
+          _update(
+            ControlLinkSnapshot(
+              state: ControlLinkState.error,
+              endpoint: endpoint,
+              lastError: error.isNotEmpty
+                  ? error
+                  : '云端控制 HTTP ${response.status}',
+              sentCount: _sentCount,
+              receivedCount: _receivedCount,
+              lastSent: _snapshot.lastSent,
+              lastReceived: raw,
+              battery: _snapshot.battery,
+            ),
+          );
+          return;
+        }
+
+        _update(
+          ControlLinkSnapshot(
+            state: ControlLinkState.connected,
+            endpoint: endpoint,
+            lastError: '',
+            sentCount: _sentCount,
+            receivedCount: _receivedCount,
+            lastSent: _snapshot.lastSent,
+            lastReceived: raw,
+            battery: _batteryFromCloudStatus(decoded, _snapshot.battery),
+          ),
+        );
+      } catch (error) {
+        if (_transport == _ControlTransport.cloudDrive &&
+            _cloudDriveEndpoint == endpoint) {
+          _markCloudError(endpoint, error.toString());
+        }
+      } finally {
+        _cloudInFlight = math.max(0, _cloudInFlight - 1);
+      }
+    })();
+
+    return true;
+  }
+
+  void _startCloudStatusPolling(String endpoint) {
+    _cloudStatusTimer?.cancel();
+    _cloudStatusTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_transport != _ControlTransport.cloudDrive ||
+          _cloudDriveEndpoint != endpoint) {
+        return;
+      }
+      unawaited(_refreshCloudDriveStatus(endpoint));
+    });
+  }
+
+  Future<void> _refreshCloudDriveStatus(String endpoint) async {
+    try {
+      final response = await html.HttpRequest.request(
+        _cloudDriveUri(endpoint, 'status').toString(),
+        method: 'GET',
+        requestHeaders: const <String, String>{'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 3));
+
+      if (_transport != _ControlTransport.cloudDrive ||
+          _cloudDriveEndpoint != endpoint) {
+        return;
+      }
+
+      final raw = response.responseText ?? '';
+      if (!_isOkStatus(response.status ?? 0)) {
+        _markCloudError(endpoint, '云端控制 HTTP ${response.status}');
+        return;
+      }
+
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) {
+        _markCloudError(endpoint, '云端控制状态格式异常');
+        return;
+      }
+
+      _receivedCount += 1;
+      _update(
+        ControlLinkSnapshot(
+          state: decoded['drive_agent_online'] == true
+              ? ControlLinkState.connected
+              : ControlLinkState.error,
+          endpoint: endpoint,
+          lastError: decoded['drive_agent_online'] == true
+              ? ''
+              : '云端底盘 agent 离线',
+          sentCount: _sentCount,
+          receivedCount: _receivedCount,
+          lastSent: _snapshot.lastSent,
+          lastReceived: raw,
+          battery: _batteryFromCloudStatus(decoded, _snapshot.battery),
+        ),
+      );
+    } catch (error) {
+      if (_transport == _ControlTransport.cloudDrive &&
+          _cloudDriveEndpoint == endpoint) {
+        _markCloudError(endpoint, error.toString());
+      }
+    }
+  }
+
   void _startHttpStatusPolling(String endpoint) {
     _httpStatusTimer?.cancel();
     _httpStatusTimer = Timer.periodic(const Duration(seconds: 3), (_) {
@@ -590,9 +839,56 @@ class ControlLink {
     );
   }
 
+  void _markCloudError(String endpoint, String error) {
+    _update(
+      ControlLinkSnapshot(
+        state: ControlLinkState.error,
+        endpoint: endpoint,
+        lastError: error,
+        sentCount: _sentCount,
+        receivedCount: _receivedCount,
+        lastSent: _snapshot.lastSent,
+        lastReceived: _snapshot.lastReceived,
+        battery: _snapshot.battery,
+      ),
+    );
+  }
+
   Uri _driverUri(String endpoint, String path) {
     final uri = Uri.parse(endpoint);
     return uri.replace(path: path, queryParameters: const <String, String>{});
+  }
+
+  Uri _cloudDriveUri(String endpoint, String action) {
+    final uri = Uri.parse(endpoint);
+    final baseSegments = uri.pathSegments.where((part) => part.isNotEmpty);
+    return uri.replace(
+      pathSegments: <String>[
+        ...baseSegments,
+        'api',
+        'vehicles',
+        _vehicleId,
+        'drive',
+        action,
+      ],
+      queryParameters: const <String, String>{},
+      fragment: '',
+    );
+  }
+
+  bool _looksLikeCloudEndpoint(String endpoint) {
+    final uri = Uri.tryParse(endpoint);
+    if (uri == null) {
+      return false;
+    }
+    if (uri.path.contains('/openrd-control') ||
+        uri.path.contains('/api/vehicles/')) {
+      return true;
+    }
+    if (uri.port == 8790) {
+      return true;
+    }
+    return uri.host == '43.139.25.165';
   }
 
   DriverBatterySnapshot _batteryFromStatus(
@@ -613,6 +909,26 @@ class ControlLink {
       return fallback;
     }
 
+    return DriverBatterySnapshot(
+      available: true,
+      profile: profile,
+      voltageV: voltage,
+      ageMs: ageMs,
+    );
+  }
+
+  DriverBatterySnapshot _batteryFromCloudStatus(
+    Map<dynamic, dynamic> status,
+    DriverBatterySnapshot fallback,
+  ) {
+    final profile =
+        status['battery_profile']?.toString() ??
+        (fallback.profile.isNotEmpty ? fallback.profile : '12V_3S');
+    final voltage = _readDouble(status['battery_voltage_v']);
+    final ageMs = _readInt(status['battery_age_ms']);
+    if (voltage <= 0.0) {
+      return fallback;
+    }
     return DriverBatterySnapshot(
       available: true,
       profile: profile,

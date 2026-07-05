@@ -49,12 +49,14 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   static const String _defaultStreamHost = '43.139.25.165';
   static const String _defaultStreamPath = 'live/openrd';
   static const String _defaultVideoControlUrl = 'http://43.139.25.165:8790';
+  static const String _defaultDriveControlUrl =
+      'http://43.139.25.165:8080/openrd-control';
   static const String _videoVehicleId = 'openrd-001';
   static const int _videoLeaseSec = 120;
 
   DriveCommand _lastCommand = DriveCommand.stop;
   final TextEditingController _controlEndpointController =
-      TextEditingController(text: 'http://192.168.100.114');
+      TextEditingController(text: _defaultDriveControlUrl);
   bool _manualMode = true;
   double _steering = 0.0;
   double _throttle = 0.0;
@@ -75,7 +77,7 @@ class _ControlDashboardPageState extends State<ControlDashboardPage> {
   final VideoControlClient _videoControl = VideoControlClient();
   StreamSubscription<ControlLinkSnapshot>? _controlLinkSubscription;
   ControlLinkSnapshot _controlLinkSnapshot = ControlLinkSnapshot.initial(
-    'http://192.168.100.114',
+    _defaultDriveControlUrl,
   );
   Timer? _controlSendTimer;
   Timer? _videoRenewTimer;

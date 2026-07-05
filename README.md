@@ -272,6 +272,11 @@ vehicle/
 - `docs/05_rk3588_deployment.md`：RK3588 原生视频与 ROS2 chroot 部署边界。`vehicle/native_video/README.md` 记录原生视频 runtime，`openrd_video_node` 负责管理它。
 - `docs/06_public_video_control.md`：公网视频按需启停方案，定义云端 control service、车端 video agent、前端启停和 lease 机制。
 - `docs/07_public_drive_control.md`：公网底盘控制方案，定义云端控制通道、RK3588 control agent、安全规则和阶段路线。
+- `docs/08_power_distribution_board.md`：车载电源分配板方案，定义 3S 电池、T 插、DC-DC、RK3588 供电和 PCB 规划。
+- `docs/09_power_distribution_eda_build.md`：电源分配板嘉立创 EDA 绘制手册，定义原理图录入、封装、PCB 坐标、走线和检查流程。
+- `docs/12_mobile_drive_control.md`：手机端控制计划，定义移动端 Web/PWA 驾驶界面、触控输入、安全停和分阶段落地路径。
+- `docs/13_cloud_frontend_deployment.md`：云端前端部署方案，定义 Flutter Web 静态构建、云端托管、同源反代、访问控制和回滚策略。
+- `hardware/openrd_pdb_v0_1/README.md`：车载电源分配板 v0.1 的嘉立创 EDA 标准版源文件、BOM 和导入说明。
 - `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
 - `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。
 

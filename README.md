@@ -295,6 +295,7 @@ vehicle/
 - `docs/08_power_distribution_board.md`：车载电源分配板方案，定义 3S 电池、T 插、DC-DC、RK3588 供电和 PCB 规划。
 - `docs/09_power_distribution_eda_build.md`：电源分配板嘉立创 EDA 绘制手册，定义原理图录入、封装、PCB 坐标、走线和检查流程。
 - `docs/10_video_latency_measurement.md`：视频链路实时延迟测量方案，定义 H.264/H.265 SEI 时间戳、云端 sidecar 解析和前端展示路径。
+- `docs/11_video_startup_latency_diagnostics.md`：视频按需启动耗时排查方案，定义从前端点击到浏览器首帧的分段打点和优化判断标准。
 - `hardware/openrd_pdb_v0_1/README.md`：车载电源分配板 v0.1 的嘉立创 EDA 标准版源文件、BOM 和导入说明。
 - `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
 - `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。

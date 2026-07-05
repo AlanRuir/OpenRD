@@ -19,6 +19,7 @@ import tempfile
 import time
 from collections import deque
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import BinaryIO
 
 from openrd_sei import (
@@ -68,6 +69,17 @@ class LatencyAggregator:
         self.latencies: deque[float] = deque(maxlen=window_size)
         self.last_frame_seq = 0
         self.last_sample_ms = 0
+        self.first_sei_seen_ms = 0
+        self.first_sei_frame_seq = 0
+        self.first_sei_latency_ms = 0
+
+    def reset_connection(self) -> None:
+        self.latencies.clear()
+        self.last_frame_seq = 0
+        self.last_sample_ms = 0
+        self.first_sei_seen_ms = 0
+        self.first_sei_frame_seq = 0
+        self.first_sei_latency_ms = 0
 
     def add_sample(self, frame_seq: int, capture_realtime_ns: int) -> None:
         now_realtime_ns = time.time_ns()
@@ -75,6 +87,10 @@ class LatencyAggregator:
         self.latencies.append(latency_ms)
         self.last_frame_seq = frame_seq
         self.last_sample_ms = int(time.time() * 1000)
+        if self.first_sei_seen_ms == 0:
+            self.first_sei_seen_ms = self.last_sample_ms
+            self.first_sei_frame_seq = frame_seq
+            self.first_sei_latency_ms = int(round(latency_ms))
         values = list(self.latencies)
         self.writer.write(
             {
@@ -85,17 +101,30 @@ class LatencyAggregator:
                 "video_latency_p95_ms": percentile(values, 0.95),
                 "video_frame_seq": frame_seq,
                 "video_latency_updated_ms": self.last_sample_ms,
+                "sidecar_first_sei_seen_ms": self.first_sei_seen_ms,
+                "sidecar_first_sei_frame_seq": self.first_sei_frame_seq,
+                "sidecar_first_sei_latency_ms": self.first_sei_latency_ms,
             }
         )
 
 
-def ffmpeg_h264_stdout(input_url: str, ffmpeg_bin: str) -> subprocess.Popen[bytes]:
+def ffmpeg_h264_stdout(
+    input_url: str,
+    ffmpeg_bin: str,
+    *,
+    stimeout_ms: int,
+) -> subprocess.Popen[bytes]:
+    input_options: list[str] = []
+    if stimeout_ms > 0 and urlparse(input_url).scheme.lower() == "rtsp":
+        input_options.extend(["-stimeout", str(stimeout_ms * 1000)])
+
     return subprocess.Popen(
         [
             ffmpeg_bin,
             "-hide_banner",
             "-loglevel",
             "error",
+            *input_options,
             "-i",
             input_url,
             "-map",
@@ -114,6 +143,16 @@ def ffmpeg_h264_stdout(input_url: str, ffmpeg_bin: str) -> subprocess.Popen[byte
     )
 
 
+def drain_stderr(process: subprocess.Popen[bytes]) -> str:
+    if process.stderr is None:
+        return ""
+    try:
+        raw = process.stderr.read()
+    except OSError:
+        return ""
+    return raw.decode("utf-8", "replace").strip()
+
+
 def read_stream(
     stream: BinaryIO,
     aggregator: LatencyAggregator,
@@ -126,7 +165,6 @@ def read_stream(
     nal_count = 0
     sei_count = 0
     last_state_ms = 0
-    writer.write({"video_latency_state": "no_sei"})
 
     while True:
         chunk = stream.read(64 * 1024)
@@ -162,6 +200,7 @@ def read_stream(
             last_state_ms = now_ms
 
     for nal_unit in parser.flush():
+        nal_count += 1
         if h264_nal_type(nal_unit) != 6:
             continue
         for payload in iter_openrd_payloads_from_h264_sei_nal(nal_unit):
@@ -169,23 +208,22 @@ def read_stream(
             aggregator.add_sample(payload.frame_seq, payload.capture_realtime_ns)
             if once:
                 return 0
-    return 0 if sei_count > 0 else 2
+    if sei_count > 0:
+        return 0
+    return 3 if nal_count == 0 else 2
 
 
-def run(args: argparse.Namespace) -> int:
-    writer = StatusWriter(args.status_file, args.vehicle_id)
-    aggregator = LatencyAggregator(writer, args.window_size)
-
-    if args.stdin:
-        return read_stream(
-            sys.stdin.buffer,
-            aggregator,
-            writer,
-            stale_sec=args.stale_sec,
-            once=args.once,
-        )
-
-    process = ffmpeg_h264_stdout(args.input, args.ffmpeg)
+def read_ffmpeg_once(
+    args: argparse.Namespace,
+    aggregator: LatencyAggregator,
+    writer: StatusWriter,
+) -> tuple[int, int | None, str]:
+    aggregator.reset_connection()
+    process = ffmpeg_h264_stdout(
+        args.input,
+        args.ffmpeg,
+        stimeout_ms=args.ffmpeg_stimeout_ms,
+    )
     assert process.stdout is not None
     try:
         code = read_stream(
@@ -198,24 +236,86 @@ def run(args: argparse.Namespace) -> int:
         if args.once:
             process.terminate()
         process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+
+    return code, process.returncode, drain_stderr(process)
+
+
+def run(args: argparse.Namespace) -> int:
+    writer = StatusWriter(args.status_file, args.vehicle_id)
+    aggregator = LatencyAggregator(writer, args.window_size)
+
+    if args.stdin:
+        code = read_stream(
+            sys.stdin.buffer,
+            aggregator,
+            writer,
+            stale_sec=args.stale_sec,
+            once=args.once,
+        )
         if code == 2:
             writer.write({"video_latency_state": "no_sei"})
-        elif process.returncode not in {0, None}:
+        elif code == 3:
+            writer.write({"video_latency_state": "no_stream"})
+        return code
+
+    reconnect_count = 0
+    writer.write({"video_latency_state": "no_stream"})
+    while True:
+        try:
+            code, ffmpeg_code, stderr_text = read_ffmpeg_once(args, aggregator, writer)
+            if args.once:
+                return code
+
+            reconnect_count += 1
+            if code == 2:
+                writer.write(
+                    {
+                        "video_latency_state": "no_sei",
+                        "reconnect_count": reconnect_count,
+                    }
+                )
+            elif code == 3:
+                writer.write(
+                    {
+                        "video_latency_state": "no_stream",
+                        "reconnect_count": reconnect_count,
+                    }
+                )
+            elif ffmpeg_code not in {0, None}:
+                writer.write(
+                    {
+                        "video_latency_state": "no_stream",
+                        "reconnect_count": reconnect_count,
+                        "last_error": (
+                            f"ffmpeg exited {ffmpeg_code}: {stderr_text}"
+                            if stderr_text
+                            else f"ffmpeg exited {ffmpeg_code}"
+                        ),
+                    }
+                )
+            else:
+                writer.write(
+                    {
+                        "video_latency_state": "no_stream",
+                        "reconnect_count": reconnect_count,
+                    }
+                )
+        except KeyboardInterrupt:
+            return 0
+        except Exception as exc:  # noqa: BLE001 - sidecar must publish failure state.
+            reconnect_count += 1
             writer.write(
                 {
-                    "video_latency_state": "no_stream",
-                    "last_error": f"ffmpeg exited {process.returncode}",
+                    "video_latency_state": "error",
+                    "reconnect_count": reconnect_count,
+                    "last_error": str(exc),
                 }
             )
-            return process.returncode or 1
-        return code
-    except KeyboardInterrupt:
-        process.terminate()
-        return 0
-    except Exception as exc:  # noqa: BLE001 - sidecar must publish failure state.
-        writer.write({"video_latency_state": "error", "last_error": str(exc)})
-        process.terminate()
-        return 1
+
+        time.sleep(args.reconnect_sec)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -241,6 +341,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ffmpeg", default=os.environ.get("FFMPEG", "ffmpeg"))
     parser.add_argument("--window-size", type=int, default=120)
     parser.add_argument("--stale-sec", type=float, default=3.0)
+    parser.add_argument("--reconnect-sec", type=float, default=0.5)
+    parser.add_argument("--ffmpeg-stimeout-ms", type=int, default=5000)
+    parser.add_argument(
+        "--ffmpeg-rw-timeout-ms",
+        type=int,
+        dest="ffmpeg_stimeout_ms",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--once", action="store_true")
     return parser
 
@@ -249,6 +357,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.window_size < 1:
         print("error: --window-size must be positive", file=sys.stderr)
+        return 2
+    if args.reconnect_sec < 0:
+        print("error: --reconnect-sec must be non-negative", file=sys.stderr)
+        return 2
+    if args.ffmpeg_stimeout_ms < 0:
+        print("error: --ffmpeg-stimeout-ms must be non-negative", file=sys.stderr)
         return 2
     return run(args)
 

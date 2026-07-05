@@ -59,6 +59,10 @@ VIDEO_LATENCY_INT_FIELDS = {
     "video_latency_p95_ms",
     "video_frame_seq",
     "video_latency_updated_ms",
+    "sidecar_first_sei_seen_ms",
+    "sidecar_first_sei_frame_seq",
+    "sidecar_first_sei_latency_ms",
+    "reconnect_count",
 }
 VIDEO_LATENCY_STATES = {
     "ok",

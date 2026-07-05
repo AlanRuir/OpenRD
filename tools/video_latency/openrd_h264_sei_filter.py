@@ -76,6 +76,18 @@ def run_filter(args: argparse.Namespace) -> int:
     input_stream = sys.stdin.buffer
     output_stream = sys.stdout.buffer
 
+    def note_injected() -> None:
+        nonlocal injected_count
+        injected_count += 1
+        if injected_count == 1:
+            print(
+                "openrd-h264-sei-filter "
+                f"first_sei_injected_ms={int(time.time() * 1000)} "
+                f"frame_seq={frame_seq - 1} nal={nal_count}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     try:
         while True:
             chunk = input_stream.read(args.chunk_size)
@@ -91,7 +103,8 @@ def run_filter(args: argparse.Namespace) -> int:
                     source_hash=source_hash,
                     idr_only=args.idr_only,
                 )
-                injected_count += 1 if injected else 0
+                if injected:
+                    note_injected()
 
             now = time.monotonic()
             if args.stats_interval_sec > 0 and now - last_stats_at >= args.stats_interval_sec:
@@ -112,7 +125,8 @@ def run_filter(args: argparse.Namespace) -> int:
                 source_hash=source_hash,
                 idr_only=args.idr_only,
             )
-            injected_count += 1 if injected else 0
+            if injected:
+                note_injected()
     except BrokenPipeError:
         return 0
 

@@ -226,6 +226,9 @@ http://127.0.0.1:8888/live/openrd.live.flv
   "video_latency_p50_ms": 170,
   "video_latency_p95_ms": 260,
   "video_frame_seq": 123456,
+  "sidecar_first_sei_seen_ms": 1780000000000,
+  "sidecar_first_sei_frame_seq": 0,
+  "sidecar_first_sei_latency_ms": 180,
   "video_latency_updated_ms": 1780000000000,
   "video_latency_state": "ok"
 }
@@ -279,6 +282,9 @@ GET /api/vehicles/openrd-001/video/status
   "video_latency_p50_ms": 170,
   "video_latency_p95_ms": 260,
   "video_frame_seq": 123456,
+  "sidecar_first_sei_seen_ms": 1780000000000,
+  "sidecar_first_sei_frame_seq": 0,
+  "sidecar_first_sei_latency_ms": 180,
   "video_latency_state": "ok",
   "video_latency_updated_ms": 1780000000000
 }

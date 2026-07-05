@@ -18,6 +18,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # Optional local overrides for openrd-video-latency-sidecar.
 # OPENRD_VIDEO_LATENCY_INPUT=rtsp://127.0.0.1/live/openrd
 # OPENRD_VIDEO_LATENCY_STATUS_FILE=/tmp/openrd-video-latency.json
+# OPENRD_VIDEO_LATENCY_RECONNECT_SEC=0.5
+# OPENRD_VIDEO_LATENCY_FFMPEG_STIMEOUT_MS=5000
 EOF
 fi
 

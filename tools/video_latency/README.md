@@ -59,6 +59,10 @@ python3 tools/video_latency/openrd_video_latency_sidecar.py \
 The sidecar requires `ffmpeg` for live URL input.  For tests, pipe Annex-B data
 directly:
 
+For RTSP input the deployed service uses `--ffmpeg-stimeout-ms 5000`; shorter
+timeouts can cause the current ZLMediaKit RTSP path to close before packets are
+read.  The cloud ffmpeg build does not support `-rw_timeout`.
+
 ```bash
 cat /tmp/openrd-camera-sei.h264 | \
   python3 tools/video_latency/openrd_video_latency_sidecar.py \

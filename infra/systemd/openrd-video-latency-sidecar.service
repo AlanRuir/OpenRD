@@ -10,8 +10,10 @@ Group=ubuntu
 WorkingDirectory=/home/ubuntu/OpenRD
 Environment=OPENRD_VIDEO_LATENCY_INPUT=rtsp://127.0.0.1/live/openrd
 Environment=OPENRD_VIDEO_LATENCY_STATUS_FILE=/tmp/openrd-video-latency.json
+Environment=OPENRD_VIDEO_LATENCY_RECONNECT_SEC=0.5
+Environment=OPENRD_VIDEO_LATENCY_FFMPEG_STIMEOUT_MS=5000
 EnvironmentFile=-/home/ubuntu/OpenRD/tools/video_latency/run/openrd-video-latency-sidecar.env
-ExecStart=/usr/bin/python3 /home/ubuntu/OpenRD/tools/video_latency/openrd_video_latency_sidecar.py --input ${OPENRD_VIDEO_LATENCY_INPUT} --status-file ${OPENRD_VIDEO_LATENCY_STATUS_FILE}
+ExecStart=/usr/bin/python3 /home/ubuntu/OpenRD/tools/video_latency/openrd_video_latency_sidecar.py --input ${OPENRD_VIDEO_LATENCY_INPUT} --status-file ${OPENRD_VIDEO_LATENCY_STATUS_FILE} --reconnect-sec ${OPENRD_VIDEO_LATENCY_RECONNECT_SEC} --ffmpeg-stimeout-ms ${OPENRD_VIDEO_LATENCY_FFMPEG_STIMEOUT_MS}
 Restart=always
 RestartSec=2
 

@@ -121,6 +121,7 @@ class OpenRdSeiTests(unittest.TestCase):
         self.assertEqual(len(samples), 1)
         self.assertEqual(samples[0].payload.frame_seq, 0)
         self.assertEqual(samples[0].payload.source_id_hash, source_id_hash("openrd-test"))
+        self.assertIn(b"first_sei_injected_ms=", completed.stderr)
 
 
 if __name__ == "__main__":

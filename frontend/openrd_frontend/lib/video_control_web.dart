@@ -9,7 +9,11 @@ class VideoControlSnapshot {
     required this.vehicleOnline,
     required this.videoState,
     required this.serviceActive,
+    required this.mode,
+    required this.transport,
     required this.playUrl,
+    required this.whipUrl,
+    required this.whepUrl,
     required this.lastError,
     required this.leaseExpiresInSec,
   });
@@ -21,7 +25,11 @@ class VideoControlSnapshot {
       videoState: (json['video_state'] ?? json['state'] ?? 'unknown')
           .toString(),
       serviceActive: json['service_active'] == true,
+      mode: (json['mode'] ?? '').toString(),
+      transport: (json['transport'] ?? '').toString(),
       playUrl: (json['play_url'] ?? '').toString(),
+      whipUrl: (json['whip_url'] ?? '').toString(),
+      whepUrl: (json['whep_url'] ?? '').toString(),
       lastError: (json['last_error'] ?? json['error'] ?? '').toString(),
       leaseExpiresInSec: _intValue(json['lease_expires_in_sec']),
     );
@@ -31,7 +39,11 @@ class VideoControlSnapshot {
   final bool vehicleOnline;
   final String videoState;
   final bool serviceActive;
+  final String mode;
+  final String transport;
   final String playUrl;
+  final String whipUrl;
+  final String whepUrl;
   final String lastError;
   final int leaseExpiresInSec;
 

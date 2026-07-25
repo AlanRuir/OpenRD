@@ -1,4 +1,4 @@
-﻿# OpenRD
+# OpenRD
 
 OpenRD 是一个开放式远程驾驶项目，全称暂定为 **Open Remote Driving**。
 
@@ -50,9 +50,12 @@ ESP32 / OpenRD-Driver
 - 前进、后退、左转、右转、停止已能通过手柄控制；
 - 前端有速度上限滑块，建议首次实车测试使用 `200` 或 `300`；
 - 前端会每 3 秒刷新 OpenRD-Driver `/status`，每 30 秒触发一次 `/read_vol`，并按 12V/3S 电池估算电量显示；
-- 前端视频默认播放云端 ZLMediaKit HTTP-FLV：`http://43.139.25.165:8888/live/openrd.live.flv`；
+- 前端视频默认走云端 ZLMediaKit WHEP/WebRTC；浏览器部署页通过 `http://43.139.25.165:8080/index/api/webrtc?app=live&stream=openrd&type=play` 同源反代播放，HTTP-FLV 仅保留为 fallback；
 - 前端视频启停默认走公网控制服务：`http://43.139.25.165:8790`；
 - RK3588 宿主 `openrd-video-agent.service` 已接入云端 control service，可按前端 lease 启停 `openrd-video-native.service`；
+- 桌面端前端已改为暗色远程驾驶舱布局：顶部状态条、中心视频主画面、右侧控制轨和折叠系统检查器；
+- 手机端已有独立驾驶 HUD，避免把桌面控制台压缩到触屏小屏上使用；
+- Flutter Web 云端发布已改为本地 CanvasKit 和内置 Noto Sans SC 字体，避免浏览器运行时依赖 Google CDN；
 - OpenRD-Driver 已修复浏览器 CORS，`/control` 不再返回重复的 `Access-Control-Allow-Origin`。
 
 当前前端静态调试方式：
@@ -61,6 +64,12 @@ ESP32 / OpenRD-Driver
 cd D:\Projects\OpenRD\frontend\openrd_frontend
 flutter build web --debug
 python -m http.server 8791 --bind 127.0.0.1 -d build\web
+```
+
+云端发布推荐使用：
+
+```powershell
+flutter build web --release --base-href /openrd/ --no-web-resources-cdn
 ```
 
 浏览器打开：
@@ -116,17 +125,20 @@ MVP 成功标准：
 
 ### 视频链路
 
-- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，并以 RTMP publisher 主动推送到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
+- 当前默认：单路 UVC 摄像头 `/dev/openrd-cam-uvc`，MJPG 输入经 `jpegparse`/`mppjpegdec` 硬解为 NV12，再由 `mpph264enc` 硬编 H.264，封装为 RTP/H.264 后通过 WHIP/WebRTC 主动推送到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
 - 保留软件解码回退路径，可通过 `OPENRD_VIDEO_MJPEG_DECODER=software` 或 `--mjpeg-decoder software` 切换到 `jpegdec`/`videoconvert`；
 - 公网视频控制服务：`http://43.139.25.165:8790`；
+- 公网 WHIP 推流地址：`http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push`；
+- 公网 WHEP 直连地址：`http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play`；
+- 浏览器 WHEP 同源代理：`http://43.139.25.165:8080/index/api/webrtc?app=live&stream=openrd&type=play`；
 - 公网 RTSP 播放地址：`rtsp://43.139.25.165/live/openrd`；
-- 公网 HTTP-FLV 播放地址：`http://43.139.25.165:8888/live/openrd.live.flv`；
-- Flutter 前端当前默认使用公网 HTTP-FLV 播放地址；
+- 公网 HTTP-FLV 播放地址：`http://43.139.25.165:8888/live/openrd.live.flv`，仅作为桌面调试 fallback；
+- Flutter 前端当前默认使用 WHEP/WebRTC，并在 `:8080` 部署页自动改写到同源代理；
 - 本机 MediaMTX 保留为局域网回退调试路径：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
 - `openrd-video-agent.service` 启用 systemd 开机自启动；`openrd-video-native.service` 由 agent 根据前端 lease 按需启停；`mediamtx.service` 可作为局域网回退服务保留；
 - CSI/IMX415 链路保留为可选调试路径，不再作为默认视频输入；
 - 视频 watchdog 使用真实 RTSP 读帧健康检查；当前 UVC 调试阶段默认关闭自动健康重启，避免排查时反复拉起视频链路；
-- 公网阶段：WebRTC + TURN/中继。
+- 公网阶段：优先 WHIP/WHEP WebRTC；如跨网 ICE 不稳定，再补 TURN 中继。
 
 ### 公网视频中继候选
 
@@ -276,6 +288,8 @@ vehicle/
 - `docs/09_power_distribution_eda_build.md`：电源分配板嘉立创 EDA 绘制手册，定义原理图录入、封装、PCB 坐标、走线和检查流程。
 - `docs/12_mobile_drive_control.md`：手机端控制计划，定义移动端 Web/PWA 驾驶界面、触控输入、安全停和分阶段落地路径。
 - `docs/13_cloud_frontend_deployment.md`：云端前端部署方案，定义 Flutter Web 静态构建、云端托管、同源反代、访问控制和回滚策略。
+- `docs/14_mobile_ui_video_compat.md`：手机端驾驶 UI 与视频兼容方案，记录 iOS FLV 不兼容、手机触控驾驶界面和 HLS/WebRTC 演进路径。
+- `docs/15_whip_whep_webrtc_migration.md`：WHIP/WHEP WebRTC 视频链路迁移记录，定义 RK3588 推流、ZLMediaKit 中继、Flutter 播放和验证清单。
 - `hardware/openrd_pdb_v0_1/README.md`：车载电源分配板 v0.1 的嘉立创 EDA 标准版源文件、BOM 和导入说明。
 - `server/openrd_control_service/README.md`：公网视频控制服务运行方式和 API。
 - `vehicle/video_agent/README.md`：RK3588 宿主 video agent 的安装和运行方式。

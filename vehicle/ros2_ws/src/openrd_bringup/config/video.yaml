@@ -5,7 +5,7 @@
     runtime_log: /workspace/OpenRD/vehicle/native_video/run/openrd-video-native.log
     auto_start: false
     poll_hz: 1.0
-    mode: rtmp
+    mode: whip
     device: /dev/openrd-cam-uvc
     width: 1280
     height: 720
@@ -16,6 +16,8 @@
     rtsp_url: rtsp://127.0.0.1:8554/live
     rtmp_url: rtmp://43.139.25.165:1935/live/openrd
     rtmp_healthcheck_url: ""
+    whip_url: http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+    whep_url: http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
     rtsp_protocols: tcp
     rtsp_latency_ms: 100
     rtp_host: 127.0.0.1

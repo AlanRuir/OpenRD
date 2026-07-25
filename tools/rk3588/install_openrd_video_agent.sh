@@ -20,6 +20,9 @@ if [[ ! -f "$ENV_FILE" ]]; then
 # OPENRD_VIDEO_AGENT_CLOUD_URL=http://43.139.25.165:8790
 # OPENRD_VIDEO_AGENT_VEHICLE_ID=openrd-001
 # OPENRD_VIDEO_AGENT_LOCAL_LEASE_SEC=150
+# OPENRD_VIDEO_AGENT_MODE=whip
+# OPENRD_VIDEO_AGENT_WHIP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+# OPENRD_VIDEO_AGENT_WHEP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
 EOF
 fi
 

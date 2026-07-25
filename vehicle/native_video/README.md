@@ -1,4 +1,4 @@
-﻿# OpenRD Native Video Runtime
+# OpenRD Native Video Runtime
 
 `openrd-video-native` 是 OpenRD 在 RK3588 原生 Debian 系统上运行的视频链路适配层。
 
@@ -23,7 +23,8 @@ v0.1 支持：
 - `fakesink` 模式做链路验证；
 - `file` 模式保存 H.264 裸流；
 - legacy `rtp` 模式把 H.264 封装为 RTP/UDP 发给本机 MediaMTX 的独立路径；
-- 默认 `rtmp` publisher 模式，直接发布到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
+- 默认 `whip` publisher 模式，通过 WHIP/WebRTC 发布到腾讯云 ZLMediaKit 的 `live/openrd` 路径；
+- 保留 `rtmp` publisher 模式作为 HTTP-FLV/RTSP fallback；
 - 保留本机 MediaMTX `rtsp` publisher 模式作为局域网回退链路；
 - 后台启动、停止、重启、状态查询；
 - 后台监督运行，RTSP 模式下必须实际读到视频帧才判定健康；
@@ -32,7 +33,6 @@ v0.1 支持：
 
 v0.1 暂不支持：
 
-- 直接 WebRTC 推流；
 - 双摄管理；
 - 直接发布 ROS2 `sensor_msgs/Image`。
 
@@ -58,7 +58,12 @@ sleep 10
 ./openrd-video-native stop
 ls -lh /tmp/openrd_camera_test.h264
 
-# 推 RTMP 给腾讯云 ZLMediaKit，再从公网 RTSP/HTTP-FLV 播放
+# 推 WHIP/WebRTC 给腾讯云 ZLMediaKit，再从公网 WHEP/WebRTC 播放
+./openrd-video-native start --mode whip --whip-url 'http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push'
+./openrd-video-native status --json
+./openrd-video-native stop
+
+# fallback：推 RTMP 给腾讯云 ZLMediaKit，再从公网 RTSP/HTTP-FLV 播放
 ./openrd-video-native start --mode rtmp --rtmp-url rtmp://43.139.25.165:1935/live/openrd
 ffprobe -rtsp_transport tcp rtsp://43.139.25.165/live/openrd
 ./openrd-video-native stop
@@ -68,10 +73,10 @@ ffprobe -rtsp_transport tcp rtsp://43.139.25.165/live/openrd
 ffprobe -rtsp_transport tcp rtsp://127.0.0.1:8554/live
 ./openrd-video-native stop
 
-# USB UVC 摄像头示例：默认 MJPG 输入，推云端 RTMP
+# USB UVC 摄像头示例：默认 MJPG 输入，推云端 WHIP
 v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 ./openrd-video-native test --device /dev/openrd-cam-uvc --input-format mjpg
-./openrd-video-native start --mode rtmp --device /dev/openrd-cam-uvc --input-format mjpg --rtmp-url rtmp://43.139.25.165:1935/live/openrd
+./openrd-video-native start --mode whip --device /dev/openrd-cam-uvc --input-format mjpg --whip-url 'http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push'
 ./openrd-video-native stop
 
 # 使用 RK3588 MPP JPEG 硬解 MJPG 输入
@@ -94,7 +99,9 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 - 编码器：`mpph264enc`；
 - 码率：`2000000` bps；
 - GOP：`30`；
-- 默认发布 URL：`rtmp://43.139.25.165:1935/live/openrd`；
+- 默认 WHIP 发布 URL：`http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push`；
+- 默认 WHEP 播放 URL：`http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play`；
+- fallback RTMP 发布 URL：`rtmp://43.139.25.165:1935/live/openrd`；
 - 公网 RTSP 播放 URL：`rtsp://43.139.25.165/live/openrd`；
 - 公网 HTTP-FLV 播放 URL：`http://43.139.25.165:8888/live/openrd.live.flv`；
 - 局域网回退播放 URL：`rtsp://192.168.100.108:8554/live` / `http://192.168.100.108:8889/live/`；
@@ -106,12 +113,14 @@ v4l2-ctl -d /dev/openrd-cam-uvc --list-formats-ext
 
 ## RTSP 播放路径
 
-当前推荐路径是让 GStreamer 作为 RTMP publisher 主动推送到腾讯云 ZLMediaKit。MediaMTX 仍保留为局域网回退测试路径：
+当前推荐路径是让 GStreamer 作为 WHIP/WebRTC publisher 主动推送到腾讯云 ZLMediaKit。RTMP/HTTP-FLV 与 MediaMTX 仍保留为回退测试路径：
 
 ```text
-/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> flvmux -> rtmpsink -> ZLMediaKit live/openrd
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> rtph264pay -> openrd-video-whip-client.py (webrtcbin) -> ZLMediaKit live/openrd
 # fallback:
-/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegdec -> videoconvert NV12 -> mpph264enc -> h264parse -> flvmux -> rtmpsink -> ZLMediaKit live/openrd
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegdec -> videoconvert NV12 -> mpph264enc -> h264parse -> rtph264pay -> openrd-video-whip-client.py (webrtcbin) -> ZLMediaKit live/openrd
+legacy fallback:
+/dev/openrd-cam-uvc -> v4l2src MJPG -> jpegparse -> mppjpegdec NV12 -> mpph264enc -> h264parse -> flvmux -> rtmpsink -> ZLMediaKit live/openrd
 reserved paths:
   live-front -> rtsp://<板子IP>:8554/live-front
   live-rear  -> rtsp://<板子IP>:8554/live-rear
@@ -163,7 +172,7 @@ ROS2 运行在 Ubuntu 22.04 chroot 内，不能直接执行宿主 Debian 路径 
 - 宿主 Debian：`openrd-video-native.service` 负责真正运行 `openrd-video-native run`；
 - 宿主 Debian：`openrd-video-native.service` 通过 `openrd-video-native supervise` 负责真正运行并自动恢复视频链路；
 - chroot ROS2：`openrd-video-systemd` 通过 `sudo -n systemctl start/stop/restart openrd-video-native.service` 管理宿主服务，并读取同一个状态目录；
-- systemd：默认 UVC 链路只要求 `openrd-video-native.service` 保持 `enabled`，板子重启后会自动尝试恢复云端 RTMP 推流；`mediamtx.service` 可作为局域网回退服务保留，`rkaiq_3A.service` 仅在 CSI/IMX415 调试时需要关注。
+- systemd：默认 UVC 链路只要求 `openrd-video-native.service` 保持 `enabled`，板子重启后会自动尝试恢复云端 WHIP/WebRTC 推流；`mediamtx.service` 可作为局域网回退服务保留，`rkaiq_3A.service` 仅在 CSI/IMX415 调试时需要关注。
 
 首次部署服务：
 

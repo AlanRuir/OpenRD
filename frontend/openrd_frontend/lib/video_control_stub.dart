@@ -4,7 +4,11 @@ class VideoControlSnapshot {
     required this.vehicleOnline,
     required this.videoState,
     required this.serviceActive,
+    required this.mode,
+    required this.transport,
     required this.playUrl,
+    required this.whipUrl,
+    required this.whepUrl,
     required this.lastError,
     required this.leaseExpiresInSec,
   });
@@ -13,7 +17,11 @@ class VideoControlSnapshot {
   final bool vehicleOnline;
   final String videoState;
   final bool serviceActive;
+  final String mode;
+  final String transport;
   final String playUrl;
+  final String whipUrl;
+  final String whepUrl;
   final String lastError;
   final int leaseExpiresInSec;
 
@@ -30,7 +38,11 @@ class VideoControlClient {
       vehicleOnline: false,
       videoState: 'unsupported',
       serviceActive: false,
+      mode: '',
+      transport: '',
       playUrl: '',
+      whipUrl: '',
+      whepUrl: '',
       lastError: 'Video cloud control is only implemented for Web',
       leaseExpiresInSec: 0,
     );

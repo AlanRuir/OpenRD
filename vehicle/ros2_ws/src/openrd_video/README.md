@@ -12,7 +12,7 @@ v0.1 阶段该 package 承担 runtime 管理职责：
 - 提供 `/openrd/start_runtime`、`/openrd/stop_runtime`、`/openrd/restart_runtime` service；
 - 调用 `vehicle/native_video/openrd-video-systemd`；
 - 读取 `openrd-video-native` 的 JSON 状态并转成 ROS2 message；
-- 记录分辨率、帧率、码率、RTSP URL、进程状态等信息。
+- 记录分辨率、帧率、码率、WHIP/WHEP URL、RTSP/RTMP fallback URL、进程状态等信息。
 
 ## 当前部署边界
 
@@ -32,9 +32,11 @@ RK3588 native Debian
 默认参数：
 
 - `runtime_cli`: `/workspace/OpenRD/vehicle/native_video/openrd-video-systemd`；
-- `mode`: `rtmp`；
+- `mode`: `whip`；
 - `device`: `/dev/openrd-cam-uvc`；
 - `rtmp_url`: `rtmp://43.139.25.165:1935/live/openrd`；
+- `whip_url`: `http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push`；
+- `whep_url`: `http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play`；
 - `rtsp_url`: `rtsp://127.0.0.1:8554/live`，仅用于本机 MediaMTX 回退；
 - `rtsp_protocols`: `tcp`；
 - `rtsp_latency_ms`: `100`。
@@ -49,17 +51,17 @@ RK3588 native Debian
   -> mppjpegdec
   -> mpph264enc
   -> h264parse
-  -> flvmux
-  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> rtph264pay
+  -> openrd-video-whip-client.py (webrtcbin) http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
   -> ZLMediaKit live/openrd
-  -> RTSP / HTTP-FLV
+  -> WHEP / WebRTC
 ```
 
 板端默认播放地址：
 
 ```text
-RTSP:     rtsp://43.139.25.165/live/openrd
-HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
+WHEP:     http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
+HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv  # fallback
 ```
 
 MediaMTX 预留 `live-front`、`live-rear`、`openrd` publisher 路径，但默认服务只运行一路 `live`。

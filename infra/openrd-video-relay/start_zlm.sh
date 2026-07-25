@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ZLM_DIR="${ZLM_DIR:-/home/ubuntu/ZLMediaKit/release/linux/Debug}"
+ZLM_DIR="${ZLM_DIR:-/home/ubuntu/ZLMediaKit/release/linux/Release}"
 SESSION="${OPENRD_ZLM_SCREEN:-openrd-zlm}"
 
 if [[ ! -x "${ZLM_DIR}/MediaServer" ]]; then

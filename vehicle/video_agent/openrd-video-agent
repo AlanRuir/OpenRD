@@ -42,6 +42,139 @@ PLAY_URL = os.environ.get(
     "OPENRD_VIDEO_AGENT_PLAY_URL",
     "http://43.139.25.165:8888/live/openrd.live.flv",
 )
+WHIP_URL = os.environ.get(
+    "OPENRD_VIDEO_AGENT_WHIP_URL",
+    "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push",
+)
+WHEP_URL = os.environ.get(
+    "OPENRD_VIDEO_AGENT_WHEP_URL",
+    "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play",
+)
+VIDEO_ENV_FILE = os.environ.get(
+    "OPENRD_VIDEO_AGENT_ENV_FILE",
+    "/home/linaro/OpenRD/vehicle/native_video/run/openrd-video-native-service.env",
+)
+
+
+DEFAULT_RUNTIME_ENV = {
+    "OPENRD_VIDEO_MODE": os.environ.get("OPENRD_VIDEO_AGENT_MODE", "whip"),
+    "OPENRD_VIDEO_DEVICE": os.environ.get("OPENRD_VIDEO_AGENT_DEVICE", "/dev/openrd-cam-uvc"),
+    "OPENRD_VIDEO_INPUT_FORMAT": os.environ.get("OPENRD_VIDEO_AGENT_INPUT_FORMAT", "mjpg"),
+    "OPENRD_VIDEO_MJPEG_DECODER": os.environ.get("OPENRD_VIDEO_AGENT_MJPEG_DECODER", "mpp"),
+    "OPENRD_VIDEO_WIDTH": os.environ.get("OPENRD_VIDEO_AGENT_WIDTH", "1280"),
+    "OPENRD_VIDEO_HEIGHT": os.environ.get("OPENRD_VIDEO_AGENT_HEIGHT", "720"),
+    "OPENRD_VIDEO_FPS": os.environ.get("OPENRD_VIDEO_AGENT_FPS", "30"),
+    "OPENRD_VIDEO_BITRATE": os.environ.get("OPENRD_VIDEO_AGENT_BITRATE", "2000000"),
+    "OPENRD_VIDEO_GOP": os.environ.get("OPENRD_VIDEO_AGENT_GOP", "30"),
+    "OPENRD_VIDEO_OUTPUT": os.environ.get("OPENRD_VIDEO_AGENT_OUTPUT", "/tmp/openrd_camera_test.h264"),
+    "OPENRD_VIDEO_RTSP_URL": os.environ.get("OPENRD_VIDEO_AGENT_RTSP_URL", "rtsp://127.0.0.1:8554/live"),
+    "OPENRD_VIDEO_RTMP_URL": os.environ.get("OPENRD_VIDEO_AGENT_RTMP_URL", "rtmp://43.139.25.165:1935/live/openrd"),
+    "OPENRD_VIDEO_RTMP_HEALTHCHECK_URL": os.environ.get("OPENRD_VIDEO_AGENT_RTMP_HEALTHCHECK_URL", ""),
+    "OPENRD_VIDEO_PYTHON": os.environ.get("OPENRD_VIDEO_AGENT_PYTHON", "python3"),
+    "OPENRD_VIDEO_FFMPEG": os.environ.get("OPENRD_VIDEO_AGENT_FFMPEG", "ffmpeg"),
+    "OPENRD_VIDEO_FFMPEG_TIMESTAMP_MODE": os.environ.get("OPENRD_VIDEO_AGENT_FFMPEG_TIMESTAMP_MODE", "wallclock"),
+    "OPENRD_VIDEO_SEI_FILTER": os.environ.get("OPENRD_VIDEO_AGENT_SEI_FILTER", "/home/linaro/OpenRD/tools/video_latency/openrd_h264_sei_filter.py"),
+    "OPENRD_VIDEO_SEI_SOURCE_ID": os.environ.get("OPENRD_VIDEO_AGENT_SEI_SOURCE_ID", "openrd-uvc"),
+    "OPENRD_VIDEO_SEI_IDR_ONLY": os.environ.get("OPENRD_VIDEO_AGENT_SEI_IDR_ONLY", "0"),
+    "OPENRD_VIDEO_SEI_FILTER_STATS_INTERVAL_SEC": os.environ.get("OPENRD_VIDEO_AGENT_SEI_FILTER_STATS_INTERVAL_SEC", "5"),
+    "OPENRD_VIDEO_WHIP_URL": WHIP_URL,
+    "OPENRD_VIDEO_WHEP_URL": WHEP_URL,
+    "OPENRD_VIDEO_RTSP_PROTOCOLS": os.environ.get("OPENRD_VIDEO_AGENT_RTSP_PROTOCOLS", "tcp"),
+    "OPENRD_VIDEO_RTSP_LATENCY_MS": os.environ.get("OPENRD_VIDEO_AGENT_RTSP_LATENCY_MS", "100"),
+    "OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC": os.environ.get(
+        "OPENRD_VIDEO_AGENT_RTSP_HEALTHCHECK_TIMEOUT_SEC",
+        "12",
+    ),
+    "OPENRD_VIDEO_HLS_HEALTHCHECK_URL": os.environ.get(
+        "OPENRD_VIDEO_AGENT_HLS_HEALTHCHECK_URL",
+        "http://127.0.0.1:8888/live/index.m3u8",
+    ),
+    "OPENRD_VIDEO_HEALTHCHECK_FAILURES": os.environ.get(
+        "OPENRD_VIDEO_AGENT_HEALTHCHECK_FAILURES",
+        "0",
+    ),
+    "OPENRD_VIDEO_MPEGTS_HOST": os.environ.get("OPENRD_VIDEO_AGENT_MPEGTS_HOST", "127.0.0.1"),
+    "OPENRD_VIDEO_MPEGTS_PORT": os.environ.get("OPENRD_VIDEO_AGENT_MPEGTS_PORT", "5004"),
+    "OPENRD_VIDEO_RTP_HOST": os.environ.get("OPENRD_VIDEO_AGENT_RTP_HOST", "127.0.0.1"),
+    "OPENRD_VIDEO_RTP_PORT": os.environ.get("OPENRD_VIDEO_AGENT_RTP_PORT", "5004"),
+    "OPENRD_VIDEO_RTP_PAYLOAD_TYPE": os.environ.get("OPENRD_VIDEO_AGENT_RTP_PAYLOAD_TYPE", "96"),
+    "OPENRD_VIDEO_RTP_MTU": os.environ.get("OPENRD_VIDEO_AGENT_RTP_MTU", "1200"),
+    "OPENRD_VIDEO_STATE_DIR": os.environ.get(
+        "OPENRD_VIDEO_AGENT_STATE_DIR",
+        "/home/linaro/OpenRD/vehicle/native_video/run",
+    ),
+    "OPENRD_VIDEO_LOG": os.environ.get(
+        "OPENRD_VIDEO_AGENT_LOG",
+        "/home/linaro/OpenRD/vehicle/native_video/run/openrd-video-native.log",
+    ),
+}
+
+
+def normalize_mode(value: object) -> str:
+    mode = str(value or "whip").strip().lower()
+    if mode == "webrtc":
+        return "whip"
+    return mode or "whip"
+
+
+def desired_runtime_env(command: dict[str, Any] | None = None) -> dict[str, str]:
+    command = command or {}
+    desired = dict(DEFAULT_RUNTIME_ENV)
+    desired["OPENRD_VIDEO_MODE"] = normalize_mode(command.get("mode") or desired["OPENRD_VIDEO_MODE"])
+    desired["OPENRD_VIDEO_WHIP_URL"] = str(command.get("whip_url") or desired["OPENRD_VIDEO_WHIP_URL"])
+    desired["OPENRD_VIDEO_WHEP_URL"] = str(command.get("whep_url") or desired["OPENRD_VIDEO_WHEP_URL"])
+    desired["OPENRD_VIDEO_RTMP_URL"] = str(command.get("rtmp_url") or desired["OPENRD_VIDEO_RTMP_URL"])
+    desired["OPENRD_VIDEO_RTSP_URL"] = str(command.get("rtsp_url") or desired["OPENRD_VIDEO_RTSP_URL"])
+    return desired
+
+
+def read_service_env() -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        with open(VIDEO_ENV_FILE, encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def write_service_env(command: dict[str, Any]) -> dict[str, str]:
+    current = read_service_env()
+    desired = desired_runtime_env(command)
+    merged = {**desired, **current}
+    for key in (
+        "OPENRD_VIDEO_MODE",
+        "OPENRD_VIDEO_WHIP_URL",
+        "OPENRD_VIDEO_WHEP_URL",
+        "OPENRD_VIDEO_RTMP_URL",
+        "OPENRD_VIDEO_RTSP_URL",
+    ):
+        merged[key] = desired[key]
+
+    os.makedirs(os.path.dirname(VIDEO_ENV_FILE), exist_ok=True)
+    ordered_keys = list(DEFAULT_RUNTIME_ENV)
+    extra_keys = sorted(key for key in merged if key not in DEFAULT_RUNTIME_ENV)
+    with open(VIDEO_ENV_FILE, "w", encoding="utf-8") as handle:
+        for key in [*ordered_keys, *extra_keys]:
+            if key in merged:
+                handle.write(f"{key}={merged[key]}\n")
+    return merged
+
+
+def runtime_matches(status: dict[str, Any], desired: dict[str, str]) -> bool:
+    if normalize_mode(status.get("mode")) != normalize_mode(desired["OPENRD_VIDEO_MODE"]):
+        return False
+    if normalize_mode(desired["OPENRD_VIDEO_MODE"]) == "whip":
+        return (
+            str(status.get("whip_url") or "") == desired["OPENRD_VIDEO_WHIP_URL"]
+            and str(status.get("whep_url") or "") == desired["OPENRD_VIDEO_WHEP_URL"]
+        )
+    return True
 
 
 def run_command(args: list[str], timeout: int = 10) -> tuple[int, str, str]:
@@ -107,6 +240,22 @@ def read_status(last_error: str = "") -> dict[str, Any]:
     else:
         state = "stopped"
 
+    reported_mode = runtime.get("mode") or DEFAULT_RUNTIME_ENV["OPENRD_VIDEO_MODE"]
+    reported_whip_url = runtime.get("whip_url") or WHIP_URL
+    reported_whep_url = runtime.get("whep_url") or WHEP_URL
+    if state == "stopped" and not service_active and not runtime_running:
+        reported_mode = DEFAULT_RUNTIME_ENV["OPENRD_VIDEO_MODE"]
+        reported_whip_url = DEFAULT_RUNTIME_ENV["OPENRD_VIDEO_WHIP_URL"]
+        reported_whep_url = DEFAULT_RUNTIME_ENV["OPENRD_VIDEO_WHEP_URL"]
+    if normalize_mode(reported_mode) == "whip":
+        reported_transport = "webrtc"
+    elif normalize_mode(reported_mode) in {"rtmp", "rtmp-sei"}:
+        reported_transport = "rtmp"
+    elif normalize_mode(reported_mode) == "rtsp":
+        reported_transport = "rtsp"
+    else:
+        reported_transport = str(runtime.get("transport") or reported_mode)
+
     return {
         "state": state,
         "service": VIDEO_SERVICE,
@@ -114,8 +263,11 @@ def read_status(last_error: str = "") -> dict[str, Any]:
         "service_active": service_active,
         "runtime_running": runtime_running,
         "pid": int(runtime.get("pid") or 0),
-        "mode": runtime.get("mode") or "rtmp",
+        "mode": reported_mode,
+        "transport": reported_transport,
         "rtmp_url": runtime.get("rtmp_url") or "",
+        "whip_url": reported_whip_url,
+        "whep_url": reported_whep_url,
         "rtsp_url": runtime.get("rtsp_url") or "",
         "play_url": PLAY_URL,
         "last_error": last_error or str(runtime.get("last_error", "") or ""),
@@ -173,7 +325,7 @@ class VideoAgent:
         payload: dict[str, Any] = {
             "vehicle_id": self.vehicle_id,
             "agent": "openrd-video-agent",
-            "version": "0.1",
+            "version": "0.2",
             "wait_sec": self.poll_wait_sec,
             "status": self.last_status,
         }
@@ -232,10 +384,14 @@ class VideoAgent:
     def _start_video(self, command: dict[str, Any]) -> dict[str, Any]:
         lease_sec = int(command.get("lease_sec") or self.local_lease_sec)
         self.lease_deadline = time.time() + max(30, lease_sec)
+        desired_env = write_service_env(command)
 
         status = read_status()
-        if status["state"] != "running":
-            ok, detail = systemctl("start")
+        action = "start"
+        if status["state"] == "running":
+            action = "restart" if not runtime_matches(status, desired_env) else ""
+        if action:
+            ok, detail = systemctl(action)
             if not ok:
                 self.last_error = detail
                 return self._status_result(False, detail)

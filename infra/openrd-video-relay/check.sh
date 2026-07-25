@@ -10,7 +10,7 @@ echo "http_port=${HTTP_PORT}"
 echo
 
 if [[ "${HOST}" == "127.0.0.1" || "${HOST}" == "localhost" ]]; then
-  zlm_dir="${ZLM_DIR:-/home/ubuntu/ZLMediaKit/release/linux/Debug}"
+  zlm_dir="${ZLM_DIR:-/home/ubuntu/ZLMediaKit/release/linux/Release}"
 
   echo "== MediaServer process =="
   ps -eo pid,user,comm,args | grep -E '[M]ediaServer|[s]creen -S media-server' || true

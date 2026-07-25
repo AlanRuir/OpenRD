@@ -29,7 +29,7 @@ fi
 
 mkdir -p "$PROJECT_DIR/vehicle/native_video/run"
 cat > "$ENV_FILE" <<'EOF'
-OPENRD_VIDEO_MODE=rtmp
+OPENRD_VIDEO_MODE=whip
 OPENRD_VIDEO_DEVICE=/dev/openrd-cam-uvc
 OPENRD_VIDEO_INPUT_FORMAT=mjpg
 OPENRD_VIDEO_MJPEG_DECODER=mpp
@@ -42,6 +42,15 @@ OPENRD_VIDEO_OUTPUT=/tmp/openrd_camera_test.h264
 OPENRD_VIDEO_RTSP_URL=rtsp://127.0.0.1:8554/live
 OPENRD_VIDEO_RTMP_URL=rtmp://43.139.25.165:1935/live/openrd
 OPENRD_VIDEO_RTMP_HEALTHCHECK_URL=
+OPENRD_VIDEO_PYTHON=python3
+OPENRD_VIDEO_FFMPEG=ffmpeg
+OPENRD_VIDEO_FFMPEG_TIMESTAMP_MODE=wallclock
+OPENRD_VIDEO_SEI_FILTER=/home/linaro/OpenRD/tools/video_latency/openrd_h264_sei_filter.py
+OPENRD_VIDEO_SEI_SOURCE_ID=openrd-uvc
+OPENRD_VIDEO_SEI_IDR_ONLY=0
+OPENRD_VIDEO_SEI_FILTER_STATS_INTERVAL_SEC=5
+OPENRD_VIDEO_WHIP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+OPENRD_VIDEO_WHEP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
 OPENRD_VIDEO_RTSP_PROTOCOLS=tcp
 OPENRD_VIDEO_RTSP_LATENCY_MS=100
 OPENRD_VIDEO_MPEGTS_HOST=127.0.0.1
@@ -103,6 +112,7 @@ sudo systemctl reset-failed openrd-video-native.service >/dev/null 2>&1 || true
 
 chmod +x "$PROJECT_DIR/vehicle/native_video/openrd-video-native"
 chmod +x "$PROJECT_DIR/vehicle/native_video/openrd-video-systemd"
+chmod +x "$PROJECT_DIR/vehicle/native_video/openrd-video-whip-client.py"
 
 echo "OpenRD native video service installed: $SERVICE_DST"
 echo "OpenRD camera udev rules installed: $UDEV_RULES_DST"

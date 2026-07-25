@@ -15,6 +15,9 @@ string output
 string rtsp_url
 string rtmp_url
 string rtmp_healthcheck_url
+string whip_url
+string whep_url
+string transport
 string rtsp_protocols
 uint32 rtsp_latency_ms
 string rtp_host

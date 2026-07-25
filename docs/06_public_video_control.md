@@ -10,18 +10,19 @@
 
 ```text
 RK3588 openrd-video-native.service
-  -> RTMP
+  -> WHIP / WebRTC
 腾讯云 ZLMediaKit
-  -> HTTP-FLV / RTSP
+  -> WHEP / WebRTC
 Flutter 前端
 ```
 
 当前公网地址：
 
 ```text
-RTMP ingest:   rtmp://43.139.25.165:1935/live/openrd
-HTTP-FLV play: http://43.139.25.165:8888/live/openrd.live.flv
-RTSP play:     rtsp://43.139.25.165/live/openrd
+WHIP ingest:       http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+WHEP play:         http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
+HTTP-FLV fallback: http://43.139.25.165:8888/live/openrd.live.flv
+RTSP fallback:     rtsp://43.139.25.165/live/openrd
 ```
 
 这个链路解决了远程观看问题，但如果 RK3588 一直推流，会持续消耗车端上行带宽、云服务器流量和编码资源。因此视频推流应从“常开”改成“前端观看时按需启停”。
@@ -54,9 +55,9 @@ Flutter 前端
 RK3588 宿主机 openrd-video-agent
   -> systemctl start/stop/status openrd-video-native.service
 RK3588 openrd-video-native.service
-  -> RTMP
+  -> WHIP / WebRTC
 腾讯云 ZLMediaKit
-  -> HTTP-FLV / RTSP
+  -> WHEP / WebRTC
 Flutter 前端
 ```
 
@@ -77,7 +78,8 @@ Flutter 前端
 - 展示视频面板；
 - 点击“启动视频”时调用云端 API；
 - 等待云端返回车端状态和播放地址；
-- 探测 HTTP-FLV 可用后开始播放；
+- 优先使用 `whep_url` 发起 WHEP SDP POST，并在 WebRTC track 到达后开始播放；
+- 仅在 WHEP 不可用或为空时，把 HTTP-FLV 作为桌面排障 fallback；
 - 播放期间发送观看心跳或续约；
 - 点击“停止视频”或页面退出时请求云端停止推流；
 - 显示启动中、播放中、停止中、异常等状态。
@@ -119,7 +121,7 @@ Flutter 前端
 - 接收云端下发的白名单命令；
 - 管理 `openrd-video-native.service`；
 - 查询 `openrd-video-native status --json`；
-- 上报 service 状态、PID、模式、RTMP 地址、错误摘要；
+- 上报 service 状态、PID、模式、transport、WHIP/WHEP 地址、fallback RTMP 地址和错误摘要；
 - 实现本地 lease / idle timeout 兜底；
 - 断开云端连接一段时间后自动停止推流。
 
@@ -139,7 +141,8 @@ Flutter 前端
 - 访问 `/dev/openrd-cam-uvc` 或后续 CSI 摄像头别名；
 - 使用 GStreamer、Rockchip MPP、V4L2 等宿主视频栈；
 - 编码 H.264；
-- 主动推 RTMP 到 ZLMediaKit；
+- 默认通过 WHIP/WebRTC 主动推送到 ZLMediaKit；
+- 保留 RTMP publisher 作为旧链路 fallback；
 - 通过现有 CLI 提供 `start`、`stop`、`restart`、`status --json`。
 
 ### ROS2 openrd_video_node
@@ -183,6 +186,8 @@ POST /api/vehicles/{vehicle_id}/video/renew
   "vehicle_id": "openrd-001",
   "state": "starting",
   "play_url": "http://43.139.25.165:8888/live/openrd.live.flv",
+  "whep_url": "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play",
+  "transport": "webrtc",
   "rtsp_url": "rtsp://43.139.25.165/live/openrd",
   "lease_expires_in_sec": 120
 }
@@ -197,8 +202,10 @@ POST /api/vehicles/{vehicle_id}/video/renew
   "vehicle_online": true,
   "video_state": "running",
   "service_active": true,
-  "mode": "rtmp",
+  "mode": "whip",
+  "transport": "webrtc",
   "play_url": "http://43.139.25.165:8888/live/openrd.live.flv",
+  "whep_url": "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play",
   "last_agent_seen_ms": 1710000000000,
   "last_error": ""
 }
@@ -310,6 +317,8 @@ agent 返回：
   "ok": true,
   "state": "running",
   "service": "openrd-video-native.service",
+  "whip_url": "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push",
+  "whep_url": "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play",
   "rtmp_url": "rtmp://43.139.25.165:1935/live/openrd",
   "pid": 5066,
   "last_error": ""
@@ -325,7 +334,9 @@ agent 周期状态上报：
   "state": "running",
   "runtime_running": true,
   "pid": 5066,
-  "mode": "rtmp",
+  "mode": "whip",
+  "transport": "webrtc",
+  "whep_url": "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play",
   "last_seen_ms": 1710000000000,
   "lease_expires_in_sec": 87
 }
@@ -341,10 +352,10 @@ agent 周期状态上报：
 5. agent 执行 systemctl start openrd-video-native.service
 6. agent 查询 openrd-video-native status --json
 7. agent 返回 running / starting / faulted
-8. 云端返回 play_url 给前端
-9. 前端轮询 /video/status 或探测 HTTP-FLV
-10. ZLMediaKit 收到 RTMP publisher 后，HTTP-FLV 可播放
-11. 前端播放器开始播放
+8. 云端返回 whep_url 给前端
+9. 前端轮询 /video/status 或直接用 WHEP endpoint 发起 SDP POST
+10. ZLMediaKit 收到 WHIP publisher 后，WHEP/WebRTC 可播放
+11. 前端 RTCPeerConnection 播放器开始播放
 12. 前端定期 POST /video/renew 保持 lease
 ```
 
@@ -406,7 +417,8 @@ stop wait timeout:       5s
 - RK3588 原生视频 runtime；
 - `openrd-video-native.service`；
 - 云端 ZLMediaKit；
-- HTTP-FLV 前端播放；
+- WHEP/WebRTC 前端播放；
+- HTTP-FLV fallback 前端播放；
 - 推流手动 start/stop 运维命令。
 
 需要新增：
@@ -431,13 +443,13 @@ stop wait timeout:       5s
 - RK3588 增加 `openrd-video-agent`，Phase 1 通过 HTTP polling 主动连接云端，后续可替换为 WebSocket；
 - 支持 `status/start/stop` 三个命令；
 - 前端增加“启动视频 / 停止视频”按钮；
-- 前端启动后播放现有 HTTP-FLV；
+- 前端启动后优先播放 WHEP/WebRTC，WHEP 不可用时回退到 HTTP-FLV；
 - agent 实现本地 lease 超时自动 stop。
 
 验收：
 
 - 前端不访问 `192.168.100.108`；
-- 点击启动后 RK3588 开始 RTMP 推流；
+- 点击启动后 RK3588 开始 WHIP/WebRTC 推流；
 - 点击停止后 RK3588 停止推流；
 - 关闭前端后 lease 超时自动停推；
 - ZLMediaKit 不生成 HLS/MP4 文件。
@@ -446,7 +458,7 @@ stop wait timeout:       5s
 
 - 云端保存最近一次 agent 状态；
 - 前端显示车辆在线、视频启动中、播放中、故障；
-- 加入 HTTP-FLV 可用性探测；
+- 加入 WHEP SDP 交换、ICE 连接状态和 fallback 可用性提示；
 - 加入启动失败错误摘要；
 - 加入多 viewer 引用计数，只有最后一个 viewer 离开才停流；
 - 补充日志和运维检查脚本。
@@ -460,9 +472,9 @@ stop wait timeout:       5s
 
 ### Phase 4：视频低延迟升级
 
-- HTTP-FLV 保留为兼容播放链路；
-- 评估 ZLMediaKit WebRTC / WHIP / WHEP；
-- 前端播放器切到更低延迟链路；
+- WHIP/WHEP 已作为默认低延迟链路；
+- HTTP-FLV 保留为桌面排障 fallback；
+- 前端播放器默认使用 WebRTC，WHEP 不可用时才回退；
 - control service 继续负责按需启停和观看 lease。
 
 ## 待决问题

@@ -44,6 +44,13 @@
 
 用途：表示原生视频 runtime 的运行状态，由 `openrd_video` 发布。
 
+字段重点：
+
+- `mode` / `transport`：当前视频发布模式，默认 `whip` / `webrtc`；
+- `whip_url`：RK3588 推送到 ZLMediaKit 的 WHIP endpoint；
+- `whep_url`：Flutter 前端播放用的 WHEP endpoint；
+- `rtmp_url` / `rtsp_url`：保留的 fallback 调试地址。
+
 ## 设计原则
 
 - 不直接使用 `geometry_msgs/Twist` 作为主控制命令，因为 OpenRD 需要 `brake`、`enable`、`estop` 等安全字段；

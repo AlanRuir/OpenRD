@@ -1,4 +1,4 @@
-﻿# 01 系统架构
+# 01 系统架构
 
 本文档描述 OpenRD 的整体架构、模块职责、数据流和后续演进方向。
 
@@ -226,20 +226,19 @@ v0.1 控制链路：
   -> mppjpegdec
   -> mpph264enc
   -> h264parse
-  -> flvmux
-  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> rtph264pay
+  -> openrd-video-whip-client.py (webrtcbin) http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
   -> ZLMediaKit live/openrd
-  -> RTSP:     rtsp://43.139.25.165/live/openrd
-  -> HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
+  -> WHEP: http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
   -> Flutter Web / App / browser
 ```
 
 说明：
 
-- RTMP publisher 是车端 service 到腾讯云 ZLMediaKit 的默认链路；
+- WHIP/WebRTC publisher 是车端 service 到腾讯云 ZLMediaKit 的默认链路；
 - 本机 MediaMTX 保留为局域网 RTSP/WebRTC 回退调试链路；
 - `openrd-video-native.service` 开机自启动，`mediamtx.service` 和 `rkaiq_3A.service` 按回退或 CSI 调试需要保留；
-- `openrd-video-native` 默认关闭公网拉流健康重启，避免公网抖动导致频繁重启；需要时可通过 `OPENRD_VIDEO_RTMP_HEALTHCHECK_URL` 打开；
+- `openrd-video-native` 默认关闭公网拉流健康重启，避免公网抖动导致频繁重启；RTMP 健康检查仅作为 fallback 调试能力保留；
 - 不建议为了“统一”而把低延迟驾驶视频强制改成 ROS2 `sensor_msgs/Image` 主链路；
 - `openrd_video` 可以作为视频进程管理、状态上报、参数管理节点，而不是必须承载每一帧图像；
 - RK3588 上的硬件视频进程运行在原生 Debian，ROS2 chroot 通过 `openrd-video-systemd` 管理宿主 `openrd-video-native.service`。

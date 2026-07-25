@@ -35,9 +35,11 @@ POST /api/agent/poll
 Default media URLs:
 
 ```text
-RTMP ingest:   rtmp://43.139.25.165:1935/live/openrd
-HTTP-FLV play: http://43.139.25.165:8888/live/openrd.live.flv
-RTSP play:     rtsp://43.139.25.165/live/openrd
+WHIP ingest:       http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+WHEP play:         http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
+RTMP fallback:     rtmp://43.139.25.165:1935/live/openrd
+HTTP-FLV fallback: http://43.139.25.165:8888/live/openrd.live.flv
+RTSP fallback:     rtsp://43.139.25.165/live/openrd
 ```
 
 ## Install On Tencent Cloud
@@ -65,6 +67,11 @@ OPENRD_CONTROL_PORT=8790
 OPENRD_CONTROL_ALLOW_ORIGIN=*
 OPENRD_CONTROL_VIEWER_TOKEN=
 OPENRD_CONTROL_AGENT_TOKEN=
+OPENRD_CONTROL_VIDEO_MODE=whip
+OPENRD_CONTROL_WHIP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+OPENRD_CONTROL_WHEP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
+OPENRD_CONTROL_RTMP_URL=rtmp://43.139.25.165:1935/live/openrd
+OPENRD_CONTROL_PLAY_URL=http://43.139.25.165:8888/live/openrd.live.flv
 OPENRD_CONTROL_DEFAULT_TTL_SEC=120
 OPENRD_CONTROL_AGENT_TIMEOUT_SEC=45
 ```

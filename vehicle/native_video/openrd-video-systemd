@@ -16,7 +16,7 @@ HOST_LOG_FILE=${OPENRD_VIDEO_HOST_LOG:-$HOST_STATE_DIR/openrd-video-native.log}
 COMMAND=${1:-help}
 shift || true
 
-MODE=rtmp
+MODE=${OPENRD_VIDEO_MODE:-whip}
 DEVICE=/dev/openrd-cam-uvc
 INPUT_FORMAT=${OPENRD_VIDEO_INPUT_FORMAT:-mjpg}
 MJPEG_DECODER=${OPENRD_VIDEO_MJPEG_DECODER:-mpp}
@@ -29,6 +29,8 @@ OUTPUT=/tmp/openrd_camera_test.h264
 RTSP_URL=${OPENRD_VIDEO_RTSP_URL:-rtsp://127.0.0.1:8554/live}
 RTMP_URL=${OPENRD_VIDEO_RTMP_URL:-rtmp://43.139.25.165:1935/live/openrd}
 RTMP_HEALTHCHECK_URL=${OPENRD_VIDEO_RTMP_HEALTHCHECK_URL:-}
+WHIP_URL=${OPENRD_VIDEO_WHIP_URL:-http://43.139.25.165:8888/index/api/webrtc?app=live\&stream=openrd\&type=push}
+WHEP_URL=${OPENRD_VIDEO_WHEP_URL:-http://43.139.25.165:8888/index/api/webrtc?app=live\&stream=openrd\&type=play}
 RTSP_PROTOCOLS=${OPENRD_VIDEO_RTSP_PROTOCOLS:-tcp}
 RTSP_LATENCY_MS=${OPENRD_VIDEO_RTSP_LATENCY_MS:-100}
 RTSP_HEALTHCHECK_TIMEOUT_SEC=${OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC:-12}
@@ -91,6 +93,10 @@ parse_args() {
         RTMP_URL=${2:?missing value for --rtmp-url}; shift 2 ;;
       --rtmp-healthcheck-url)
         RTMP_HEALTHCHECK_URL=${2:?missing value for --rtmp-healthcheck-url}; shift 2 ;;
+      --whip-url)
+        WHIP_URL=${2:?missing value for --whip-url}; shift 2 ;;
+      --whep-url)
+        WHEP_URL=${2:?missing value for --whep-url}; shift 2 ;;
       --rtsp-protocols)
         RTSP_PROTOCOLS=${2:?missing value for --rtsp-protocols}; shift 2 ;;
       --rtsp-latency-ms)
@@ -152,6 +158,8 @@ OPENRD_VIDEO_OUTPUT=$OUTPUT
 OPENRD_VIDEO_RTSP_URL=$RTSP_URL
 OPENRD_VIDEO_RTMP_URL=$RTMP_URL
 OPENRD_VIDEO_RTMP_HEALTHCHECK_URL=$RTMP_HEALTHCHECK_URL
+OPENRD_VIDEO_WHIP_URL=$WHIP_URL
+OPENRD_VIDEO_WHEP_URL=$WHEP_URL
 OPENRD_VIDEO_RTSP_PROTOCOLS=$RTSP_PROTOCOLS
 OPENRD_VIDEO_RTSP_LATENCY_MS=$RTSP_LATENCY_MS
 OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC=$RTSP_HEALTHCHECK_TIMEOUT_SEC

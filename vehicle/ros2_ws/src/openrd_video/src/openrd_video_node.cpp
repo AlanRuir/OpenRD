@@ -46,6 +46,9 @@ struct RuntimeStatus
   std::string rtsp_url;
   std::string rtmp_url;
   std::string rtmp_healthcheck_url;
+  std::string whip_url;
+  std::string whep_url;
+  std::string transport;
   std::string rtsp_protocols;
   uint32_t rtsp_latency_ms{0};
   std::string rtp_host;
@@ -266,6 +269,15 @@ RuntimeStatus parse_runtime_status(const std::string & json)
   if (const auto value = extract_json_string(json, "rtmp_healthcheck_url")) {
     status.rtmp_healthcheck_url = *value;
   }
+  if (const auto value = extract_json_string(json, "whip_url")) {
+    status.whip_url = *value;
+  }
+  if (const auto value = extract_json_string(json, "whep_url")) {
+    status.whep_url = *value;
+  }
+  if (const auto value = extract_json_string(json, "transport")) {
+    status.transport = *value;
+  }
   if (const auto value = extract_json_string(json, "rtsp_protocols")) {
     status.rtsp_protocols = *value;
   }
@@ -309,7 +321,7 @@ public:
       "runtime_log", "/home/linaro/OpenRD/vehicle/native_video/run/openrd-video-native.log");
     auto_start_ = declare_parameter<bool>("auto_start", false);
     poll_hz_ = declare_parameter<double>("poll_hz", 1.0);
-    mode_ = declare_parameter<std::string>("mode", "rtmp");
+    mode_ = declare_parameter<std::string>("mode", "whip");
     device_ = declare_parameter<std::string>("device", "/dev/openrd-cam-uvc");
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 720);
@@ -320,6 +332,10 @@ public:
     rtsp_url_ = declare_parameter<std::string>("rtsp_url", "rtsp://127.0.0.1:8554/live");
     rtmp_url_ = declare_parameter<std::string>("rtmp_url", "rtmp://43.139.25.165:1935/live/openrd");
     rtmp_healthcheck_url_ = declare_parameter<std::string>("rtmp_healthcheck_url", "");
+    whip_url_ = declare_parameter<std::string>(
+      "whip_url", "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push");
+    whep_url_ = declare_parameter<std::string>(
+      "whep_url", "http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play");
     rtsp_protocols_ = declare_parameter<std::string>("rtsp_protocols", "tcp");
     rtsp_latency_ms_ = declare_parameter<int>("rtsp_latency_ms", 100);
     rtp_host_ = declare_parameter<std::string>("rtp_host", "127.0.0.1");
@@ -422,6 +438,10 @@ private:
           arguments.emplace_back("--rtmp-healthcheck-url");
           arguments.emplace_back(rtmp_healthcheck_url_);
         }
+        arguments.emplace_back("--whip-url");
+        arguments.emplace_back(whip_url_);
+        arguments.emplace_back("--whep-url");
+        arguments.emplace_back(whep_url_);
         arguments.emplace_back("--rtsp-protocols");
         arguments.emplace_back(rtsp_protocols_);
         arguments.emplace_back("--rtsp-latency-ms");
@@ -501,6 +521,9 @@ private:
     message.rtsp_url = status.rtsp_url.empty() ? rtsp_url_ : status.rtsp_url;
     message.rtmp_url = status.rtmp_url.empty() ? rtmp_url_ : status.rtmp_url;
     message.rtmp_healthcheck_url = status.rtmp_healthcheck_url.empty() ? rtmp_healthcheck_url_ : status.rtmp_healthcheck_url;
+    message.whip_url = status.whip_url.empty() ? whip_url_ : status.whip_url;
+    message.whep_url = status.whep_url.empty() ? whep_url_ : status.whep_url;
+    message.transport = status.transport.empty() ? "webrtc" : status.transport;
     message.rtsp_protocols = status.rtsp_protocols.empty() ? rtsp_protocols_ : status.rtsp_protocols;
     message.rtsp_latency_ms = status.rtsp_latency_ms == 0 ? static_cast<uint32_t>(rtsp_latency_ms_) : status.rtsp_latency_ms;
     message.rtp_host = status.rtp_host.empty() ? rtp_host_ : status.rtp_host;
@@ -605,7 +628,7 @@ private:
   std::string runtime_log_;
   bool auto_start_{false};
   double poll_hz_{1.0};
-  std::string mode_{"rtmp"};
+  std::string mode_{"whip"};
   std::string device_{"/dev/openrd-cam-uvc"};
   int width_{1280};
   int height_{720};
@@ -616,6 +639,8 @@ private:
   std::string rtsp_url_{"rtsp://127.0.0.1:8554/live"};
   std::string rtmp_url_{"rtmp://43.139.25.165:1935/live/openrd"};
   std::string rtmp_healthcheck_url_;
+  std::string whip_url_{"http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push"};
+  std::string whep_url_{"http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play"};
   std::string rtsp_protocols_{"tcp"};
   int rtsp_latency_ms_{100};
   std::string rtp_host_{"127.0.0.1"};

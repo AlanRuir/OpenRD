@@ -1,12 +1,18 @@
 {
-    "name": "openrd_frontend",
-    "short_name": "openrd_frontend",
+    "name": "OpenRD Remote Drive",
+    "short_name": "OpenRD",
+    "id": ".",
     "start_url": ".",
-    "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
-    "orientation": "portrait-primary",
+    "scope": ".",
+    "display": "fullscreen",
+    "display_override": [
+        "fullscreen",
+        "standalone"
+    ],
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "description": "OpenRD remote driving cockpit.",
+    "orientation": "landscape",
     "prefer_related_applications": false,
     "icons": [
         {

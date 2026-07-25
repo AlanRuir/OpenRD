@@ -1,4 +1,4 @@
-﻿# 05 RK3588 部署策略
+# 05 RK3588 部署策略
 
 本文档记录 OpenRD 在 ATK-DLRK3588B 上的部署边界。当前板卡系统为正点原子 Debian 11 bullseye / aarch64，内核为 Rockchip 5.10 系列。
 
@@ -154,10 +154,10 @@ vehicle/native_video/openrd-video-systemd
   -> mppjpegdec format=NV12
   -> mpph264enc
   -> h264parse
-  -> flvmux
-  -> rtmpsink rtmp://43.139.25.165:1935/live/openrd
+  -> rtph264pay
+  -> openrd-video-whip-client.py (webrtcbin) http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
   -> 腾讯云 ZLMediaKit live/openrd
-  -> RTSP / HTTP-FLV
+  -> WHEP / WebRTC
 ```
 
 当前支持命令：
@@ -172,13 +172,13 @@ vehicle/native_video/openrd-video-systemd
 ./openrd-video-native pipeline
 ```
 
-v0.1 支持 `fakesink`、`file`、legacy `rtp`、本机 `rtsp` publisher 和云端 `rtmp` publisher 模式。当前默认推荐 `rtmp`：GStreamer 主动向腾讯云 ZLMediaKit 的 `live/openrd` 路径发布，控制端可通过公网 RTSP 或 HTTP-FLV 播放。MediaMTX 仍作为局域网回退调试服务保留。
+v0.1 支持 `fakesink`、`file`、legacy `rtp`、本机 `rtsp` publisher、云端 `rtmp` publisher 和云端 `whip` publisher 模式。当前默认推荐 `whip`：GStreamer 主动向腾讯云 ZLMediaKit 的 `live/openrd` 路径发布，控制端通过公网 WHEP/WebRTC 播放。RTMP/HTTP-FLV 和 MediaMTX 仍作为回退调试服务保留。
 
 当前默认公网播放地址：
 
 ```text
-RTSP:     rtsp://43.139.25.165/live/openrd
-HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv
+WHEP:     http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
+HTTP-FLV: http://43.139.25.165:8888/live/openrd.live.flv  # fallback
 ```
 
 本机 MediaMTX 回退配置固定为 publisher 模式，并关闭自动枚举 WebRTC ICE 地址，只额外宣告板子的稳定地址 `192.168.100.108`：
@@ -215,8 +215,8 @@ cd /home/linaro/OpenRD
 OPENRD_BOARD_IP=192.168.100.108 bash tools/rk3588/configure_openrd_mediamtx.sh
 bash tools/rk3588/run_openrd_rtsp_smoke_test.sh
 
-# 验证默认云端 RTMP 链路
-./vehicle/native_video/openrd-video-native pipeline --mode rtmp --rtmp-url rtmp://43.139.25.165:1935/live/openrd
+# 验证默认云端 WHIP 链路
+./vehicle/native_video/openrd-video-native pipeline --mode whip --whip-url 'http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push'
 ```
 
 后续 `openrd_video_node` 通过这个稳定 CLI 管理原生视频 runtime，而不是直接在 chroot 内访问 `mpph264enc`。
@@ -233,13 +233,15 @@ bash tools/rk3588/install_openrd_video_service.sh
 安装脚本会生成 `vehicle/native_video/run/openrd-video-native-service.env`，当前长期运行配置为：
 
 ```text
-OPENRD_VIDEO_MODE=rtmp
+OPENRD_VIDEO_MODE=whip
 OPENRD_VIDEO_DEVICE=/dev/openrd-cam-uvc
 OPENRD_VIDEO_INPUT_FORMAT=mjpg
 OPENRD_VIDEO_MJPEG_DECODER=mpp
 OPENRD_VIDEO_RTSP_URL=rtsp://127.0.0.1:8554/live
 OPENRD_VIDEO_RTMP_URL=rtmp://43.139.25.165:1935/live/openrd
 OPENRD_VIDEO_RTMP_HEALTHCHECK_URL=
+OPENRD_VIDEO_WHIP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=push
+OPENRD_VIDEO_WHEP_URL=http://43.139.25.165:8888/index/api/webrtc?app=live&stream=openrd&type=play
 OPENRD_VIDEO_RTSP_PROTOCOLS=tcp
 OPENRD_VIDEO_HEALTHCHECK_FAILURES=0
 OPENRD_VIDEO_RTSP_HEALTHCHECK_TIMEOUT_SEC=8
@@ -251,7 +253,7 @@ OPENRD_VIDEO_MAX_RKAIQ_RESTARTS=1
 OPENRD_VIDEO_FAULT_EXIT_CODE=42
 ```
 
-`openrd-video-native.service` 应保持 `enabled`。`mediamtx.service` 和 `rkaiq_3A.service` 可按局域网回退或 CSI/IMX415 调试需要保留。板子重启后会自动尝试恢复云端 RTMP 发布；如果 camera/ISP 故障触发 `faulted`，`openrd-video-native.service` 会以退出码 42 停在 failed 状态，避免无限重启：
+`openrd-video-native.service` 应保持 `enabled`。`mediamtx.service` 和 `rkaiq_3A.service` 可按局域网回退或 CSI/IMX415 调试需要保留。板子重启后会自动尝试恢复云端 WHIP/WebRTC 发布；如果 camera/ISP 故障触发 `faulted`，`openrd-video-native.service` 会以退出码 42 停在 failed 状态，避免无限重启：
 
 ```bash
 systemctl is-enabled openrd-video-native.service
